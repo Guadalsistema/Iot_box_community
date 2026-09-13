@@ -826,3 +826,15 @@ class TestCommunityIotJobLease(TransactionCase):
         )
         self.assertEqual(res["accepted"], 0)
         self.assertEqual(len(res["rejected"]), 4)
+
+    def test_result_acknowledges_stable_result_pair(self):
+        job = self._new_job()
+        claimed = self.Job.claim_for_box(self.box, limit=1)
+        result = {"job_id": job.id, "lock_token": claimed.lock_token,
+                  "state": "done", "result_id": "result-1"}
+        first = self.Job.apply_results_for_box(self.box, [result])
+        self.assertEqual(first["accepted"], 1)
+        self.assertEqual(first["accepted_pairs"], [{"job_id": job.id, "result_id": "result-1"}])
+        second = self.Job.apply_results_for_box(self.box, [result])
+        self.assertEqual(second["accepted"], 1)
+        self.assertEqual(second["accepted_pairs"], first["accepted_pairs"])

@@ -13,8 +13,12 @@ MAX_POSTGRES_INT = 2147483647
 MAX_PDF_BYTES = 25 * 1024 * 1024
 MAX_DOCUMENT_COPIES = 10
 MAX_DOCUMENT_FILENAME = 128
-DOCUMENT_ERROR_RETENTION_DAYS = 7
+DOCUMENT_RETENTION_HOURS = 12
 MAX_TICKET_PAYLOAD_BYTES = 10 * 1024 * 1024
+MAX_RESULT_TEXT = 4096
+MAX_CUPS_JOB_ID = 128
+MAX_PRINTER_REASONS = 1024
+MAX_GROUP_JOBS = 10
 
 
 def _parse_strict_job_id(raw_job_id):
@@ -112,6 +116,7 @@ class CommunityIotJob(models.Model):
             ("done", "Done"),
             ("error", "Error"),
             ("cancelled", "Cancelled"),
+            ("uncertain", "Uncertain Dispatch"),
         ],
         default="pending",
         help="Internal job status (pending/processing/done/error/cancelled).",
@@ -163,7 +168,6 @@ class CommunityIotJob(models.Model):
     document_mimetype = fields.Char(copy=False, readonly=True)
     document_size = fields.Integer(copy=False, readonly=True)
     document_sha256 = fields.Char(copy=False, readonly=True, size=64)
-    document_expires_at = fields.Datetime(copy=False, readonly=True, index=True)
     result_status = fields.Selection(
         selection=[
             ("none", "Not Reported"),
@@ -215,6 +219,16 @@ class CommunityIotJob(models.Model):
         readonly=True,
         copy=False,
     )
+    dispatch_group_id = fields.Char(index=True, copy=False, readonly=True, size=64)
+    claim_deadline = fields.Datetime(index=True, copy=False, readonly=True)
+    result_id = fields.Char(index=True, copy=False, readonly=True, size=64)
+    cups_job_id = fields.Char(copy=False, readonly=True, size=MAX_CUPS_JOB_ID)
+    cups_state = fields.Selection(
+        [(x, x) for x in ("pending", "held", "processing", "completed", "canceled", "aborted", "processing-stopped")],
+        copy=False, readonly=True,
+    )
+    printer_reasons = fields.Char(copy=False, readonly=True, size=MAX_PRINTER_REASONS)
+    cups_observed_at = fields.Datetime(copy=False, readonly=True)
 
     def init(self):
         super().init()
@@ -223,14 +237,14 @@ class CommunityIotJob(models.Model):
             """
             CREATE INDEX IF NOT EXISTS community_iot_job_pending_box_idx
                       ON community_iot_box_iot_job (box_id, create_date ASC, id ASC)
-                   WHERE state = 'pending';
+                    WHERE state = 'pending';
             """
         )
         self.env.cr.execute(
             """
             CREATE INDEX IF NOT EXISTS community_iot_job_processing_lease_idx
                       ON community_iot_box_iot_job (box_id, lease_expires_at)
-                   WHERE state = 'processing';
+                    WHERE state = 'processing';
             """
         )
 
@@ -251,8 +265,18 @@ class CommunityIotJob(models.Model):
                 raise exceptions.ValidationError(
                     _("PDF documents can only be sent to a Standard Printer device.")
                 )
-            if job.document_attachment_id and job.document_mimetype != "application/pdf":
+            if job.state in ("pending", "processing") and (
+                not job.document_attachment_id
+                or job.document_mimetype != "application/pdf"
+            ):
                 raise exceptions.ValidationError(_("Document print jobs require a PDF attachment."))
+            if job.state in ("pending", "processing") and not (
+                job.document_filename
+                and 0 < job.document_size <= MAX_PDF_BYTES
+                and job.document_sha256
+                and len(job.document_sha256) == 64
+            ):
+                raise exceptions.ValidationError(_("PDF jobs require complete attachment metadata."))
 
     @api.model
     def _create_pdf_jobs(
@@ -266,6 +290,8 @@ class CommunityIotJob(models.Model):
         payload=None,
         origin_model=None,
         origin_id=None,
+        dispatch_group_id=None,
+        claim_deadline=None,
     ):
         """Create bounded PDF jobs after a caller has validated business access.
 
@@ -320,6 +346,8 @@ class CommunityIotJob(models.Model):
             "document_sha256": digest,
             "origin_model": origin_model or False,
             "origin_id": origin_id or False,
+            "dispatch_group_id": (dispatch_group_id or secrets.token_hex(24))[:64],
+            "claim_deadline": claim_deadline or False,
         }
         job_name = (name or filename).strip()[:200]
         vals_list = []
@@ -394,7 +422,36 @@ class CommunityIotJob(models.Model):
         return self.sudo().create(vals_list)
 
     @api.model
-    def claim_for_box(self, box, limit=5, lease_seconds=900, supported_job_types=None):
+    def claim_for_box_v1(
+        self,
+        box,
+        limit=5,
+        lease_seconds=900,
+        supported_job_types=None,
+    ):
+        """Atomically claim pending jobs for v1 PDF dispatch."""
+        return self._claim_for_box_impl(box, limit, lease_seconds, supported_job_types, "v1")
+
+    @api.model
+    def claim_for_box_v2(
+        self,
+        box,
+        limit=5,
+        lease_seconds=900,
+        supported_job_types=None,
+    ):
+        """Atomically claim pending jobs for v2 PDF dispatch."""
+        return self._claim_for_box_impl(box, limit, lease_seconds, supported_job_types, "v2")
+
+    @api.model
+    def _claim_for_box_impl(
+        self,
+        box,
+        limit=5,
+        lease_seconds=900,
+        supported_job_types=None,
+        dispatch_version="v2",
+    ):
         """Atomically claim pending jobs and recover abandoned leases using CTE."""
         box.ensure_one()
         limit = min(max(int(limit or 5), 1), 100)
@@ -410,23 +467,34 @@ class CommunityIotJob(models.Model):
             ]
         )
 
-        # Non-blocking CTE recovery for expired/legacy processing rows
+        # Import here to avoid circular dependencies
+        if dispatch_version == "v1":
+            from .pdf_dispatch_v1 import PdfDispatchV1
+            pdf_dispatch = PdfDispatchV1()
+        else:
+            from .pdf_dispatch_v2 import PdfDispatchV2
+            pdf_dispatch = PdfDispatchV2()
+
+        pdf_dispatch.recover_expired(self, box)
+        pdf_dispatch.expire_deadlines(self, box)
+        document_recovery_filter = pdf_dispatch.recovery_filter
         self.env.cr.execute(
-            """
+            f"""
                 WITH expired_jobs AS (
                     SELECT id
                       FROM community_iot_box_iot_job
-                     WHERE box_id = %s
-                       AND state = 'processing'
-                       AND (
-                           lease_expires_at < NOW()
-                           OR (
-                               lease_expires_at IS NULL
-                               AND write_date < NOW() - (%s * INTERVAL '1 second')
-                           )
-                       )
-                     ORDER BY id
-                     FOR UPDATE SKIP LOCKED
+                      WHERE box_id = %s
+                        AND state = 'processing'
+                         {document_recovery_filter}
+                        AND (
+                            lease_expires_at < NOW()
+                            OR (
+                                lease_expires_at IS NULL
+                                AND write_date < NOW() - (%s * INTERVAL '1 second')
+                            )
+                        )
+                      ORDER BY id
+                      FOR UPDATE SKIP LOCKED
                 )
                 UPDATE community_iot_box_iot_job AS job
                    SET state = 'pending',
@@ -436,7 +504,7 @@ class CommunityIotJob(models.Model):
                        write_date = NOW()
                   FROM expired_jobs
                  WHERE job.id = expired_jobs.id
-             RETURNING job.id
+              RETURNING job.id
             """,
             [box.id, lease_seconds],
         )
@@ -453,21 +521,84 @@ class CommunityIotJob(models.Model):
         query_params = [box.id]
         if supported_job_types:
             query_params.append(supported_job_types)
-        query_params.append(limit)
+        # Select only the first FIFO row; a PDF group is considered below.  Do
+        # not lock this probe: two pollers may see different members of the
+        # same group with SKIP LOCKED, and locking those probes before the
+        # group lock can deadlock them in opposite directions.
         self.env.cr.execute(
             f"""
                 SELECT id
                   FROM community_iot_box_iot_job
-                 WHERE box_id = %s
-                   AND state = 'pending'
-                   {type_filter_sql}
-                 ORDER BY create_date ASC, id ASC
-                 FOR UPDATE SKIP LOCKED
-                 LIMIT %s
+                  WHERE box_id = %s
+                    AND state = 'pending'
+                    {type_filter_sql}
+                  ORDER BY create_date ASC, id ASC
+                  LIMIT 1
             """,
             query_params,
         )
-        jobs = self.browse([row[0] for row in self.env.cr.fetchall()])
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        jobs = self.browse(ids)
+        # pdf_print_v2 claims a complete dispatch group, never a partial batch.
+        if (
+            pdf_dispatch.grouped
+            and "document_print" in supported_job_types
+            and jobs
+            and jobs[0].job_type == "document_print"
+        ):
+            first = jobs[0]
+            if first.dispatch_group_id:
+                # A transaction-scoped advisory lock serializes claimers for
+                # one group before either transaction locks group rows.  The
+                # two-key form keeps groups on different boxes independent.
+                self.env.cr.execute(
+                    "SELECT pg_try_advisory_xact_lock(%s, hashtext(%s))",
+                    [box.id, first.dispatch_group_id],
+                )
+                if not self.env.cr.fetchone()[0]:
+                    return self.browse()
+                self.env.cr.execute(
+                    """SELECT id FROM community_iot_box_iot_job
+                       WHERE box_id = %s AND dispatch_group_id = %s AND state = 'pending'
+                       ORDER BY id FOR UPDATE""",
+                    [box.id, first.dispatch_group_id],
+                )
+                group_ids = self.browse([row[0] for row in self.env.cr.fetchall()])
+                group_size = self.search_count(
+                    [
+                        ("box_id", "=", box.id),
+                        ("dispatch_group_id", "=", first.dispatch_group_id),
+                    ]
+                )
+                if (
+                    len(group_ids) <= MAX_GROUP_JOBS
+                    and len(group_ids) == group_size
+                    and len(group_ids) <= limit
+                ):
+                    jobs = group_ids
+                else:
+                    # A partial group is not dispatchable; release the rows
+                    # selected by the first query and wait for the next poll.
+                    jobs = self.browse()
+        elif jobs:
+            non_group_document_filter = (
+                "AND job_type != 'document_print'" if pdf_dispatch.grouped else ""
+            )
+            self.env.cr.execute(
+                f"""
+                    SELECT id
+                      FROM community_iot_box_iot_job
+                     WHERE box_id = %s
+                       AND state = 'pending'
+                       {non_group_document_filter}
+                       {type_filter_sql}
+                     ORDER BY create_date ASC, id ASC
+                     FOR UPDATE SKIP LOCKED
+                     LIMIT %s
+                """,
+                [*query_params, limit],
+            )
+            jobs = self.browse([row[0] for row in self.env.cr.fetchall()])
         if not jobs:
             return jobs
 
@@ -560,8 +691,33 @@ class CommunityIotJob(models.Model):
                 rejected_items.append((idx, {"job_id": job_id, "reason": "expired_lease"}))
                 continue
 
+            progress = leases[idx].get("progress") if isinstance(leases[idx], dict) else None
+            observed = None
+            cups_id = state = reasons = None
+            if isinstance(progress, dict):
+                cups_id = progress.get("cups_job_id")
+                state = progress.get("cups_state")
+                reasons = progress.get("printer_reasons")
+                observed = progress.get("observed_at", progress.get("cups_observed_at"))
+                if (cups_id is not None and (not isinstance(cups_id, str) or len(cups_id) > MAX_CUPS_JOB_ID)) or (
+                    state is not None and state not in ("pending", "held", "processing", "completed", "canceled", "aborted", "processing-stopped")
+                ) or (reasons is not None and (not isinstance(reasons, str) or len(reasons) > MAX_PRINTER_REASONS)):
+                    rejected_items.append((idx, {"job_id": job_id, "reason": "invalid_item"}))
+                    continue
+
             new_lease_expires_at = now + timedelta(seconds=default_lease_seconds)
             job.write({"lease_expires_at": new_lease_expires_at})
+            if isinstance(progress, dict):
+                observed_at = now
+                if isinstance(observed, str):
+                    try:
+                        candidate = fields.Datetime.from_string(observed)
+                        if candidate <= now + timedelta(minutes=5) and candidate >= now - timedelta(days=1):
+                            observed_at = candidate
+                    except (TypeError, ValueError):
+                        pass
+                job.write({"cups_job_id": cups_id or False, "cups_state": state or False,
+                           "printer_reasons": reasons or False, "cups_observed_at": observed_at})
             accepted_items.append(
                 (
                     idx,
@@ -582,8 +738,28 @@ class CommunityIotJob(models.Model):
         return {"accepted": accepted, "rejected": rejected}
 
     @api.model
-    def apply_results_for_box(self, box, results):
+    def apply_results_for_box_v1(self, box, results):
+        """Apply results for v1 PDF dispatch."""
+        return self._apply_results_for_box_impl(box, results, "v1")
+
+    @api.model
+    def apply_results_for_box_v2(self, box, results):
+        """Apply results for v2 PDF dispatch."""
+        return self._apply_results_for_box_impl(box, results, "v2")
+
+    @api.model
+    def _apply_results_for_box_impl(self, box, results, dispatch_version="v2"):
+        """Apply results for PDF jobs with appropriate dispatch policy."""
         box.ensure_one()
+        
+        # Import here to avoid circular dependencies
+        if dispatch_version == "v1":
+            from .pdf_dispatch_v1 import PdfDispatchV1
+            pdf_dispatch = PdfDispatchV1()
+        else:
+            from .pdf_dispatch_v2 import PdfDispatchV2
+            pdf_dispatch = PdfDispatchV2()
+            
         if not isinstance(results, list):
             return {"accepted": 0, "rejected": []}
 
@@ -623,8 +799,8 @@ class CommunityIotJob(models.Model):
 
             # Strict type check on optional text fields
             invalid_type = False
-            for field_name in ("result_message", "error_message", "agent_log", "error_code"):
-                if field_name in result and not _is_valid_optional_str(result[field_name]):
+            for field_name in ("result_message", "error_message", "agent_log", "error_code", "result_id"):
+                if field_name in result and (not _is_valid_optional_str(result[field_name]) or len(result[field_name] or "") > MAX_RESULT_TEXT):
                     invalid_type = True
                     break
             if invalid_type:
@@ -648,6 +824,7 @@ class CommunityIotJob(models.Model):
         parsed_valid.sort(key=lambda x: (x[0], x[1]))
 
         accepted_count = 0
+        accepted_pairs = []
 
         for job_id, idx, token_str, final_state, result in parsed_valid:
             # Acquire row lock before reading state/token
@@ -687,23 +864,41 @@ class CommunityIotJob(models.Model):
                 continue
 
             # Handle terminal job re-submissions idempotently before lease expiry checks
-            if job.state in ("done", "error", "cancelled"):
+            if job.state in ("done", "error", "cancelled", "uncertain"):
                 if not job.lock_token or not secrets.compare_digest(job.lock_token, token_str):
                     rejected_items.append((idx, {"job_id": job_id, "reason": "stale_lease"}))
                     continue
 
                 if job.state == "done":
-                    if final_state == "done":
+                    if final_state == "done" and (job.job_type != "document_print" or pdf_dispatch.accepts_terminal_result(job, result, final_state)):
                         accepted_count += 1
+                        accepted_pairs.append({"job_id": job.id, "result_id": job.result_id or result.get("result_id")})
                     else:
                         rejected_items.append((idx, {"job_id": job_id, "reason": "terminal_result_mismatch"}))
                 elif job.state == "error":
-                    if final_state == "error":
+                    if final_state == "error" and (job.job_type != "document_print" or pdf_dispatch.accepts_terminal_result(job, result, final_state)):
                         accepted_count += 1
+                        accepted_pairs.append({"job_id": job.id, "result_id": job.result_id or result.get("result_id")})
                     else:
                         rejected_items.append((idx, {"job_id": job_id, "reason": "terminal_result_mismatch"}))
                 elif job.state == "cancelled":
                     rejected_items.append((idx, {"job_id": job_id, "reason": "terminal_result_mismatch"}))
+                elif job.state == "uncertain":
+                    if job.job_type == "document_print" and pdf_dispatch.accepts_uncertain_result(job, result, final_state):
+                        accepted_count += 1
+                        accepted_pairs.append(
+                            {"job_id": job.id, "result_id": job.result_id}
+                        )
+                    else:
+                        rejected_items.append(
+                            (
+                                idx,
+                                {
+                                    "job_id": job_id,
+                                    "reason": "terminal_result_mismatch",
+                                },
+                            )
+                        )
                 continue
 
             if job.state != "processing":
@@ -716,6 +911,10 @@ class CommunityIotJob(models.Model):
 
             if not job.lease_expires_at or job.lease_expires_at <= now:
                 rejected_items.append((idx, {"job_id": job_id, "reason": "expired_lease"}))
+                continue
+
+            if job.job_type == "document_print" and pdf_dispatch.requires_result_id and not result.get("result_id"):
+                rejected_items.append((idx, {"job_id": job_id, "reason": "missing_result_id"}))
                 continue
 
             raw_result_status = result.get("result_status")
@@ -733,6 +932,8 @@ class CommunityIotJob(models.Model):
             error_message = result.get("error_message")
 
             if final_state == "done":
+                result_id = result.get("result_id") or secrets.token_urlsafe(24)
+                job.write({"result_id": result_id[:64]})
                 job.finish_from_agent(
                     {
                         "state": "done",
@@ -753,6 +954,8 @@ class CommunityIotJob(models.Model):
                         }
                     )
             elif final_state == "error":
+                result_id = result.get("result_id") or secrets.token_urlsafe(24)
+                job.write({"result_id": result_id[:64]})
                 job.finish_from_agent(
                     {
                         "state": "error",
@@ -762,11 +965,6 @@ class CommunityIotJob(models.Model):
                         "error_code": error_code,
                         "error_message": error_message or result_message,
                         "processed_at": now,
-                        "document_expires_at": (
-                            now + timedelta(days=DOCUMENT_ERROR_RETENTION_DAYS)
-                            if job.job_type == "document_print"
-                            else False
-                        ),
                     }
                 )
                 if job.job_type.startswith("test_") and job.device_id:
@@ -777,14 +975,29 @@ class CommunityIotJob(models.Model):
                         }
                     )
             elif final_state == "pending":
-                job.release_for_retry()
+                if job.job_type == "document_print":
+                    pdf_dispatch.finish_pending(job, {
+                        "state": "uncertain",
+                        "result_status": "error",
+                        "result_message": result_message or "Dispatch result was ambiguous.",
+                        "agent_log": agent_log,
+                        "error_code": error_code or "ambiguous_result",
+                        "error_message": error_message or "Document dispatch requires reconciliation.",
+                        "processed_at": now,
+                    })
+                else:
+                    job.release_for_retry()
 
             accepted_count += 1
+            result_id = result.get("result_id")
+            if isinstance(result_id, str) and result_id[:64]:
+                job.write({"result_id": result_id[:64]})
+            accepted_pairs.append({"job_id": job.id, "result_id": job.result_id or result_id or False})
 
         rejected_items.sort(key=lambda x: x[0])
         rejected = [item[1] for item in rejected_items]
 
-        return {"accepted": accepted_count, "rejected": rejected}
+        return {"accepted": accepted_count, "accepted_pairs": accepted_pairs, "rejected": rejected}
 
     def release_for_retry(self):
         self.write(
@@ -796,7 +1009,6 @@ class CommunityIotJob(models.Model):
                 "claimed_at": False,
                 "lease_expires_at": False,
                 "lock_token": False,
-                "document_expires_at": False,
             }
         )
 
@@ -817,6 +1029,15 @@ class CommunityIotJob(models.Model):
                 raise exceptions.UserError(_("Only failed PDF document jobs can be retried."))
             if not job.document_attachment_id:
                 raise exceptions.UserError(_("The PDF is no longer available; create a new print job."))
+            if job.dispatch_group_id and self.search_count(
+                [
+                    ("box_id", "=", job.box_id.id),
+                    ("dispatch_group_id", "=", job.dispatch_group_id),
+                ]
+            ) > 1:
+                raise exceptions.UserError(
+                    _("Grouped PDF document jobs cannot be retried individually.")
+                )
             job.release_for_retry()
         return True
 
@@ -824,7 +1045,7 @@ class CommunityIotJob(models.Model):
         for job in self:
             if job.job_type != "document_print" or job.state not in ("pending", "error"):
                 raise exceptions.UserError(_("Only pending or failed PDF document jobs can be cancelled."))
-            job.write({"state": "cancelled", "document_expires_at": False})
+            job.write({"state": "cancelled"})
             job._cleanup_document_if_complete()
         return True
 
@@ -832,25 +1053,26 @@ class CommunityIotJob(models.Model):
         for job in self.filtered("document_attachment_id"):
             attachment = job.document_attachment_id
             related = self.sudo().search([("document_attachment_id", "=", attachment.id)])
-            if any(item.state in ("pending", "processing", "error") for item in related):
+            if any(item.state in ("pending", "processing", "error", "uncertain") for item in related):
                 continue
-            related.write({"document_attachment_id": False, "document_expires_at": False})
+            related.write({"document_attachment_id": False})
             attachment.sudo().unlink()
 
     @api.model
     def _cron_cleanup_expired_documents(self):
-        expired = self.sudo().search(
+        retained_jobs = self.sudo().search(
             [
                 ("job_type", "=", "document_print"),
-                ("state", "=", "error"),
+                ("state", "in", ("error", "uncertain")),
                 ("document_attachment_id", "!=", False),
-                ("document_expires_at", "!=", False),
-                ("document_expires_at", "<=", fields.Datetime.now()),
             ]
         )
-        for attachment in expired.mapped("document_attachment_id"):
+        cutoff = fields.Datetime.now() - timedelta(hours=DOCUMENT_RETENTION_HOURS)
+        for attachment in retained_jobs.mapped("document_attachment_id"):
+            if not attachment.create_date or attachment.create_date > cutoff:
+                continue
             related = self.sudo().search([("document_attachment_id", "=", attachment.id)])
             if any(item.state in ("pending", "processing") for item in related):
                 continue
-            related.write({"document_attachment_id": False, "document_expires_at": False})
+            related.write({"document_attachment_id": False})
             attachment.sudo().unlink()

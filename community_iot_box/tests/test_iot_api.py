@@ -136,6 +136,102 @@ class TestCommunityIotApiController(HttpCase):
         job.invalidate_recordset(["state", "lock_token", "claimed_at"])
         self.assertEqual(job.state, "processing")
 
+    def test_capability_agent_is_not_offered_legacy_jobs(self):
+        job = self._new_job()
+        self.box.agent_capabilities = json.dumps(["pdf_print_v2"])
+
+        response = self.url_open(
+            "/iot/api/v1/jobs/poll",
+            data=json.dumps({"max_jobs": 1}),
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json().get("jobs"), [])
+        self.assertEqual(job.state, "pending")
+
+    def test_pdf_v1_agent_uses_legacy_pdf_dispatch(self):
+        self.box.agent_capabilities = json.dumps(["pdf_print_v1"])
+        job = self._new_pdf_job()
+
+        poll = self.url_open(
+            "/iot/api/v1/jobs/poll",
+            data=json.dumps({"max_jobs": 1}),
+            headers=self._headers(),
+        )
+
+        self.assertEqual(poll.status_code, 200)
+        job_data = poll.json()["jobs"][0]
+        self.assertEqual(job_data["job_id"], job.id)
+        self.assertIn("document", job_data)
+        self.assertNotIn("cups_printer_name", job_data)
+        self.assertNotIn("dispatch_group_id", job_data)
+
+        result = self.url_open(
+            "/iot/api/v1/jobs/result",
+            data=json.dumps(
+                {
+                    "results": [
+                        {
+                            "job_id": job.id,
+                            "lock_token": job_data["lock_token"],
+                            "state": "retry",
+                        }
+                    ]
+                }
+            ),
+            headers=self._headers(),
+        )
+
+        self.assertEqual(result.status_code, 200)
+        job.invalidate_recordset(["state"])
+        self.assertEqual(job.state, "pending")
+
+    def test_device_sync_refreshes_capabilities_without_converting_manual_device(self):
+        self.printer.printer_capabilities = json.dumps(
+            {"color_modes": ["monochrome"]}
+        )
+
+        response = self.url_open(
+            "/iot/api/v1/devices/sync",
+            data=json.dumps(
+                {
+                    "devices": [
+                        {
+                            "name": "Discovered printer name",
+                            "device_key": "discovered-printer-key",
+                            "device_type": "standard_printer",
+                            "backend": "cups",
+                            "interface": "cups",
+                            "cups_printer_name": "API_PDF_Printer",
+                            "capabilities": {
+                                "color_modes": ["color", "monochrome"],
+                                "document_formats": ["application/pdf"],
+                                "media": ["iso_a4_210x297mm"],
+                                "sides": ["one-sided"],
+                            },
+                        }
+                    ]
+                }
+            ),
+            headers=self._headers(),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.printer.invalidate_recordset()
+        self.assertFalse(self.printer.auto_detected)
+        self.assertEqual(self.printer.name, "API PDF Printer")
+        self.assertEqual(self.printer.device_key, "api-pdf-printer")
+        self.assertEqual(
+            json.loads(self.printer.printer_capabilities),
+            {
+                "color_modes": ["color", "monochrome"],
+                "document_formats": ["application/pdf"],
+                "media": ["iso_a4_210x297mm"],
+                "sides": ["one-sided"],
+            },
+        )
+
     def test_api_jobs_lease_renew(self):
         job = self._new_job()
         claimed = self.Job.claim_for_box(self.box, limit=1)

@@ -9,398 +9,546 @@ msgstr ""
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
 
-#: views/iot_menu_views.xml
+#: code:addons/community_iot_box/views/iot_menu_views.xml:0
+#. module: community_iot_box
 msgid "IoT Box Community"
 msgstr "IoT Box Community"
 
+#. module: community_iot_box
 msgid "Dashboard"
 msgstr "Panel"
 
+#. module: community_iot_box
 msgid "IoT Boxes"
 msgstr "Cajas IoT"
 
+#. module: community_iot_box
 msgid "IoT Devices"
 msgstr "Dispositivos IoT"
 
+#. module: community_iot_box
 msgid "IoT Jobs"
 msgstr "Trabajos IoT"
 
+#. module: community_iot_box
 msgid "Test connection"
 msgstr "Probar conexión"
 
+#. module: community_iot_box
 msgid "Connection test will be available soon."
 msgstr "La prueba de conexión estará disponible próximamente."
 
+#. module: community_iot_box
 msgid "Open interface"
 msgstr "Abrir interfaz"
 
+#. module: community_iot_box
 msgid "Configure an IP address to open the interface"
 msgstr "Configure una dirección IP para abrir la interfaz"
 
+#. module: community_iot_box
 msgid "Not configured"
 msgstr "No configurado"
 
+#. module: community_iot_box
 msgid "No version reported"
 msgstr "Sin versión reportada"
 
+#. module: community_iot_box
 msgid "Last heartbeat"
 msgstr "Último latido"
 
+#. module: community_iot_box
 msgid "No connection recorded"
 msgstr "Sin conexión registrada"
 
+#. module: community_iot_box
 msgid "devices"
 msgstr "dispositivos"
 
+#. module: community_iot_box
 msgid "Token configured"
 msgstr "Token configurado"
 
+#. module: community_iot_box
 msgid "No token"
 msgstr "Sin token"
 
+#. module: community_iot_box
 msgid "Devices"
 msgstr "Dispositivos"
 
+#. module: community_iot_box
 msgid "Jobs"
 msgstr "Trabajos"
 
+#. module: community_iot_box
 msgid "IoT Box Home Page"
 msgstr "Página principal de IoT Box"
 
+#. module: community_iot_box
 msgid "Image Version"
 msgstr "Versión de imagen"
 
+#. module: community_iot_box
 msgid "Generate token"
 msgstr "Generar token"
 
+#. module: community_iot_box
 msgid "Identifier"
 msgstr "Identificador"
 
+#. module: community_iot_box
 msgid "Manufacturer"
 msgstr "Fabricante"
 
+#. module: community_iot_box
 msgid "Connection Type"
 msgstr "Tipo de conexión"
 
+#. module: community_iot_box
 msgid "Print test page"
 msgstr "Imprimir página de prueba"
 
+#. module: community_iot_box
 msgid "General"
 msgstr "General"
 
+#. module: community_iot_box
 msgid "Connection"
 msgstr "Conexión"
 
+#. module: community_iot_box
 msgid "Status"
 msgstr "Estado"
 
+#. module: community_iot_box
 msgid "Notes"
 msgstr "Notas"
 
+#. module: community_iot_box
 msgid "Execution"
 msgstr "Ejecución"
 
+#. module: community_iot_box
 msgid "Payload"
 msgstr "Carga útil"
 
+#. module: community_iot_box
 msgid "PDF Document"
 msgstr "Documento PDF"
 
+#. module: community_iot_box
 msgid "Errors"
 msgstr "Errores"
 
+#. module: community_iot_box
 msgid "Agent Log"
 msgstr "Registro del agente"
 
+#. module: community_iot_box
 msgid "Origin"
 msgstr "Origen"
 
+#. module: community_iot_box
 msgid "Retry PDF"
 msgstr "Reintentar PDF"
 
+#. module: community_iot_box
 msgid "Cancel PDF"
 msgstr "Cancelar PDF"
 
-#: static/src/js/iot_dashboard.js
+#: code:addons/community_iot_box/static/src/js/iot_dashboard.js:0
+#. module: community_iot_box
 msgid "Could not load the IoT Box Community dashboard."
 msgstr "No fue posible cargar el panel de IoT Box Community."
 
+#. module: community_iot_box
 msgid "New IoT Box"
 msgstr "Nueva caja IoT"
 
-#: static/src/xml/iot_dashboard.xml
+#: code:addons/community_iot_box/static/src/xml/iot_dashboard.xml:0
+#. module: community_iot_box
 msgid "Operational status of boxes, devices and jobs"
 msgstr "Estado operativo de cajas, dispositivos y trabajos"
 
+#. module: community_iot_box
 msgid "Refresh"
 msgstr "Actualizar"
 
+#. module: community_iot_box
 msgid "Loading dashboard..."
 msgstr "Cargando panel..."
 
+#. module: community_iot_box
 msgid "Could not load the dashboard"
 msgstr "No se pudo cargar el panel"
 
+#. module: community_iot_box
 msgid "Check the connection to Odoo and try again."
 msgstr "Compruebe la conexión con Odoo e inténtelo de nuevo."
 
+#. module: community_iot_box
 msgid "Retry"
 msgstr "Reintentar"
 
+#. module: community_iot_box
 msgid "Boxes online"
 msgstr "Cajas en línea"
 
+#. module: community_iot_box
 msgid "of"
 msgstr "de"
 
+#. module: community_iot_box
 msgid "active boxes"
 msgstr "cajas activas"
 
+#. module: community_iot_box
 msgid "configured on boxes"
 msgstr "configurados en cajas"
 
+#. module: community_iot_box
 msgid "Pending jobs"
 msgstr "Trabajos pendientes"
 
+#. module: community_iot_box
 msgid "pending or processing"
 msgstr "pendientes o en proceso"
 
+#. module: community_iot_box
 msgid "Needs attention"
 msgstr "Requiere atención"
 
+#. module: community_iot_box
 msgid "boxes or jobs with errors"
 msgstr "cajas o trabajos con errores"
 
+#. module: community_iot_box
 msgid "Latest information reported by each agent"
 msgstr "Última información reportada por cada agente"
 
+#. module: community_iot_box
 msgid "View all"
 msgstr "Ver todo"
 
+#. module: community_iot_box
 msgid "Company"
 msgstr "Compañía"
 
+#. module: community_iot_box
 msgid "IP local"
 msgstr "IP local"
 
+#. module: community_iot_box
 msgid "Agent version"
 msgstr "Versión del agente"
 
+#. module: community_iot_box
 msgid "Not reported"
 msgstr "Sin reportar"
 
+#. module: community_iot_box
 msgid "Token"
 msgstr "Token"
 
+#. module: community_iot_box
 msgid "Configured"
 msgstr "Configurado"
 
+#. module: community_iot_box
 msgid "No communication"
 msgstr "Sin comunicación"
 
+#. module: community_iot_box
 msgid "No IoT Boxes yet"
 msgstr "Aún no hay cajas IoT"
 
+#. module: community_iot_box
 msgid "Create the first box to start linking the agent."
 msgstr "Cree la primera caja para comenzar a vincular el agente."
 
+#. module: community_iot_box
 msgid "Create IoT Box"
 msgstr "Crear caja IoT"
 
+#. module: community_iot_box
 msgid "Recent alerts"
 msgstr "Alertas recientes"
 
+#. module: community_iot_box
 msgid "Situations detected from live data"
 msgstr "Situaciones detectadas a partir de datos en vivo"
 
+#. module: community_iot_box
 msgid "No active alerts"
 msgstr "No hay alertas activas"
 
+#. module: community_iot_box
 msgid "There are no offline boxes or failed jobs."
 msgstr "No hay cajas desconectadas ni trabajos fallidos."
 
+#. module: community_iot_box
 msgid "Latest jobs"
 msgstr "Últimos trabajos"
 
+#. module: community_iot_box
 msgid "Recent activity sent to agents"
 msgstr "Actividad reciente enviada a los agentes"
 
+#. module: community_iot_box
 msgid "View full log"
 msgstr "Ver registro completo"
 
+#. module: community_iot_box
 msgid "Job"
 msgstr "Trabajo"
 
+#. module: community_iot_box
 msgid "Type"
 msgstr "Tipo"
 
+#. module: community_iot_box
 msgid "Device"
 msgstr "Dispositivo"
 
+#. module: community_iot_box
 msgid "Box"
 msgstr "Caja"
 
+#. module: community_iot_box
 msgid "Attempts"
 msgstr "Intentos"
 
+#. module: community_iot_box
 msgid "Created"
 msgstr "Creado"
 
+#. module: community_iot_box
 msgid "No jobs yet"
 msgstr "Aún no hay trabajos"
 
+#. module: community_iot_box
 msgid "Jobs will appear here when a bridge module creates them."
 msgstr "Los trabajos aparecerán aquí cuando un módulo puente los cree."
 
-#: models/iot_job.py
+#: code:addons/community_iot_box/models/iot_job.py:0
+#. module: community_iot_box
 msgid "A job in state '%s' must be assigned to an IoT Box."
 msgstr "Un trabajo en estado '%s' debe estar asignado a una caja IoT."
 
+#. module: community_iot_box
 msgid "PDF documents can only be sent to a Standard Printer device."
 msgstr "Los documentos PDF solo pueden enviarse a un dispositivo de impresora estándar."
 
+#. module: community_iot_box
 msgid "Document print jobs require a PDF attachment."
 msgstr "Los trabajos de impresión de documentos requieren un adjunto PDF."
 
+#. module: community_iot_box
 msgid "Select an active Standard Printer with an IoT Box."
 msgstr "Seleccione una impresora estándar activa con una caja IoT."
 
+#. module: community_iot_box
 msgid "The Standard Printer has no system printer name."
 msgstr "La impresora estándar no tiene nombre de impresora del sistema."
 
+#. module: community_iot_box
 msgid "The generated document is not a valid PDF."
 msgstr "El documento generado no es un PDF válido."
 
+#. module: community_iot_box
 msgid "The PDF exceeds the 25 MiB limit."
 msgstr "El PDF supera el límite de 25 MiB."
 
+#. module: community_iot_box
 msgid "Copies must be between 1 and 10."
 msgstr "Las copias deben estar entre 1 y 10."
 
+#. module: community_iot_box
 msgid "Select an active ticket or Standard Printer with an IoT Box."
 msgstr "Seleccione un ticket activo o una impresora estándar con una caja IoT."
 
+#. module: community_iot_box
 msgid "Only failed PDF document jobs can be retried."
 msgstr "Solo se pueden reintentar trabajos de documentos PDF fallidos."
 
+#. module: community_iot_box
 msgid "The PDF is no longer available; create a new print job."
 msgstr "El PDF ya no está disponible; cree un nuevo trabajo de impresión."
 
+#. module: community_iot_box
 msgid "Only pending or failed PDF document jobs can be cancelled."
 msgstr "Solo se pueden cancelar trabajos de documentos PDF pendientes o fallidos."
 
-#: models/iot_device.py
+#: code:addons/community_iot_box/models/iot_device.py:0
+#. module: community_iot_box
 msgid "The IoT Box is not online. Check the agent heartbeat."
 msgstr "La caja IoT no está en línea. Compruebe el latido del agente."
 
+#. module: community_iot_box
 msgid "The device has no active IoT Box assigned."
 msgstr "El dispositivo no tiene una caja IoT activa asignada."
 
+#. module: community_iot_box
 msgid "Agent Capabilities"
 msgstr "Capacidades del agente"
+#. module: community_iot_box
 msgid "Agent UID"
 msgstr "UID del agente"
+#. module: community_iot_box
 msgid "Agent Version"
 msgstr "Versión del agente"
+#. module: community_iot_box
 msgid "Auto Detected"
 msgstr "Detectado automáticamente"
+#. module: community_iot_box
 msgid "Auto Identifier"
 msgstr "Identificador automático"
+#. module: community_iot_box
 msgid "Backend"
 msgstr "Backend"
+#. module: community_iot_box
 msgid "CUPS Printer Name"
 msgstr "Nombre de impresora CUPS"
+#. module: community_iot_box
 msgid "Claimed At"
 msgstr "Reclamado el"
+#. module: community_iot_box
 msgid "Config Version"
 msgstr "Versión de configuración"
+#. module: community_iot_box
 msgid "Date and time of the latest heartbeat received from the IoT Box."
 msgstr "Fecha y hora del último latido recibido de la caja IoT."
+#. module: community_iot_box
 msgid "Date and time when the job ended (success or error)."
 msgstr "Fecha y hora en que terminó el trabajo (éxito o error)."
+#. module: community_iot_box
 msgid "Date when an agent claimed the job for processing."
 msgstr "Fecha en que un agente reclamó el trabajo para procesarlo."
+#. module: community_iot_box
 msgid "Device Key"
 msgstr "Clave del dispositivo"
+#. module: community_iot_box
 msgid "Device Path"
 msgstr "Ruta del dispositivo"
+#. module: community_iot_box
 msgid "Device Type"
 msgstr "Tipo de dispositivo"
+#. module: community_iot_box
 msgid "Devices Count"
 msgstr "Cantidad de dispositivos"
+#. module: community_iot_box
 msgid "Discovery Payload"
 msgstr "Carga útil de descubrimiento"
+#. module: community_iot_box
 msgid "Discovery Source"
 msgstr "Origen del descubrimiento"
+#. module: community_iot_box
 msgid "Error Code"
 msgstr "Código de error"
+#. module: community_iot_box
 msgid "Error Message"
 msgstr "Mensaje de error"
+#. module: community_iot_box
 msgid "Host"
 msgstr "Host"
+#. module: community_iot_box
 msgid "Hostname"
 msgstr "Nombre del host"
+#. module: community_iot_box
 msgid "Interface"
 msgstr "Interfaz"
+#. module: community_iot_box
 msgid "IoT Token"
 msgstr "Token IoT"
+#. module: community_iot_box
 msgid "Job Type"
 msgstr "Tipo de trabajo"
+#. module: community_iot_box
 msgid "Last Discovered At"
 msgstr "Último descubrimiento"
+#. module: community_iot_box
 msgid "Last IP"
 msgstr "Última IP"
+#. module: community_iot_box
 msgid "Last Seen"
 msgstr "Última conexión"
+#. module: community_iot_box
 msgid "Last Test Date"
 msgstr "Fecha de última prueba"
+#. module: community_iot_box
 msgid "Last Test Status"
 msgstr "Estado de última prueba"
+#. module: community_iot_box
 msgid "Lease Expires At"
 msgstr "Vencimiento del arrendamiento"
+#. module: community_iot_box
 msgid "Lock Token"
 msgstr "Token de bloqueo"
+#. module: community_iot_box
 msgid "MAC Address"
 msgstr "Dirección MAC"
+#. module: community_iot_box
 msgid "Origin Model"
 msgstr "Modelo de origen"
+#. module: community_iot_box
 msgid "Origin Record ID"
 msgstr "ID del registro de origen"
+#. module: community_iot_box
 msgid "PDF Attachment"
 msgstr "Adjunto PDF"
+#. module: community_iot_box
 msgid "PDF Printing Available"
 msgstr "Impresión PDF disponible"
+#. module: community_iot_box
 msgid "Processed At"
 msgstr "Procesado el"
+#. module: community_iot_box
 msgid "Result Message"
 msgstr "Mensaje del resultado"
+#. module: community_iot_box
 msgid "Result Status"
 msgstr "Estado del resultado"
+#. module: community_iot_box
 msgid "Serial Baudrate"
 msgstr "Velocidad serial"
+#. module: community_iot_box
 msgid "Ticket Mode"
 msgstr "Modo de ticket"
+#. module: community_iot_box
 msgid "USB IN EP"
 msgstr "EP USB de entrada"
+#. module: community_iot_box
 msgid "USB Interface"
 msgstr "Interfaz USB"
+#. module: community_iot_box
 msgid "USB OUT EP"
 msgstr "EP USB de salida"
+#. module: community_iot_box
 msgid "USB Product ID"
 msgstr "ID de producto USB"
+#. module: community_iot_box
 msgid "USB Vendor ID"
 msgstr "ID de fabricante USB"
+#. module: community_iot_box
 msgid "Ticket Print"
 msgstr "Impresión de ticket"
+#. module: community_iot_box
 msgid "Label Print"
 msgstr "Impresión de etiqueta"
+#. module: community_iot_box
 msgid "Label Print ZPL"
 msgstr "Impresión de etiqueta ZPL"
+#. module: community_iot_box
 msgid "PDF Document Print"
 msgstr "Impresión de documento PDF"
+#. module: community_iot_box
 msgid "Ticket Printer"
 msgstr "Impresora de tickets"
+#. module: community_iot_box
 msgid "Standard Printer"
 msgstr "Impresora estándar"
+#. module: community_iot_box
 msgid "Label Printer"
 msgstr "Impresora de etiquetas"

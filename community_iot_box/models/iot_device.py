@@ -24,6 +24,7 @@ class CommunityIotDevice(models.Model):
         "usb_in_ep",
         "usb_out_ep",
         "ticket_mode",
+        "printer_capabilities",
     }
 
     name = fields.Char(required=True)
@@ -47,6 +48,12 @@ class CommunityIotDevice(models.Model):
     discovery_payload = fields.Text(
         string="Discovery Payload",
         help="Raw JSON payload reported by the agent when it detects the device.",
+    )
+    printer_capabilities = fields.Text(
+        string="Printer Capabilities",
+        default="{}",
+        readonly=True,
+        help="Validated print capabilities reported by the IoT agent.",
     )
 
     device_key = fields.Char(

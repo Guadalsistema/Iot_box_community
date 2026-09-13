@@ -9,6 +9,9 @@ from psycopg2 import OperationalError
 from odoo import fields, http
 from odoo.http import request
 
+from ..models.pdf_dispatch_v1 import PdfDispatchV1
+from ..models.pdf_dispatch_v2 import PdfDispatchV2
+
 
 _logger = logging.getLogger(__name__)
 
@@ -22,7 +25,14 @@ LEGACY_AGENT_JOB_TYPES = (
     "test_label",
     "test_drawer",
 )
-CAPABILITY_JOB_TYPES = {"pdf_print_v1": ("document_print",)}
+CAPABILITY_JOB_TYPES = {
+    "pdf_print_v1": ("document_print",),
+    "pdf_print_v2": ("document_print",),
+}
+PDF_DISPATCHERS = {
+    "pdf_print_v1": PdfDispatchV1(),
+    "pdf_print_v2": PdfDispatchV2(),
+}
 CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
 
@@ -116,14 +126,24 @@ class CommunityIotApiController(http.Controller):
         return self._normalize_capabilities(capabilities)
 
     def _supported_job_types(self, box):
-        supported = list(LEGACY_AGENT_JOB_TYPES)
-        for capability in self._box_capabilities(box):
+        capabilities = self._box_capabilities(box)
+        if not capabilities:
+            return list(LEGACY_AGENT_JOB_TYPES)
+        supported = []
+        for capability in capabilities:
             supported.extend(CAPABILITY_JOB_TYPES.get(capability, ()))
         return supported
 
+    def _document_dispatcher(self, box):
+        capabilities = self._box_capabilities(box)
+        for capability in ("pdf_print_v2", "pdf_print_v1"):
+            if capability in capabilities:
+                return PDF_DISPATCHERS[capability]
+        return None
+
     def _build_devices_config(self, box):
         devices = []
-        for device in box.device_ids.filtered("active"):
+        for device in box.device_ids.filtered("active")[:100]:
             connection = {
                 "host": device.connection_host,
                 "ip_address": device.connection_host,
@@ -204,6 +224,36 @@ class CommunityIotApiController(http.Controller):
         if ticket_mode not in {"narrow", "wide", "standard"}:
             ticket_mode = "standard"
 
+        raw_capabilities = payload.get("capabilities")
+        capabilities = {}
+        if isinstance(raw_capabilities, dict):
+            allowed = {
+                "document_formats": {"application/pdf"},
+                "color_modes": {"monochrome", "color"},
+                "sides": {"one-sided", "two-sided-long-edge"},
+            }
+            for key, accepted in allowed.items():
+                values = raw_capabilities.get(key)
+                if isinstance(values, list):
+                    capabilities[key] = sorted(
+                        {
+                            value
+                            for value in values[:32]
+                            if isinstance(value, str) and value in accepted
+                        }
+                    )
+            media = raw_capabilities.get("media")
+            if isinstance(media, list):
+                capabilities["media"] = sorted(
+                    {
+                        value
+                        for value in media[:32]
+                        if isinstance(value, str)
+                        and len(value) <= 64
+                        and "a4" in value.lower()
+                    }
+                )
+
         return {
             "name": name,
             "device_key": device_key,
@@ -222,6 +272,7 @@ class CommunityIotApiController(http.Controller):
             "auto_identifier": auto_identifier,
             "discovery_source": payload.get("discovery_source"),
             "discovery_payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            "printer_capabilities": json.dumps(capabilities, sort_keys=True),
         }
 
     def _find_existing_detected_device(self, box, normalized):
@@ -257,7 +308,7 @@ class CommunityIotApiController(http.Controller):
     def _prepare_detected_device_vals(self, normalized, record=None):
         vals = {
             "active": True,
-            "auto_detected": True,
+            "auto_detected": not record or record.auto_detected,
             "auto_identifier": normalized.get("auto_identifier"),
             "discovery_source": normalized.get("discovery_source"),
             "last_discovered_at": fields.Datetime.now(),
@@ -281,13 +332,14 @@ class CommunityIotApiController(http.Controller):
             "usb_product_id": normalized.get("usb_product_id"),
             "usb_interface": normalized.get("usb_interface"),
             "ticket_mode": normalized.get("ticket_mode"),
+            "printer_capabilities": normalized.get("printer_capabilities"),
         }
 
         if record and not record.auto_detected:
             for field_name, value in config_vals.items():
                 if value in (None, False, ""):
                     continue
-                if not record[field_name]:
+                if field_name == "printer_capabilities" or not record[field_name]:
                     vals[field_name] = value
             return vals
 
@@ -331,7 +383,10 @@ class CommunityIotApiController(http.Controller):
                 "mac_address",
             ):
                 if payload.get(field_name) is not None:
-                    vals[field_name] = payload.get(field_name)
+                    value = payload.get(field_name)
+                    if not isinstance(value, str) or len(value) > 256:
+                        return self._json_error("IOT_INVALID_PAYLOAD", "Registration metadata is invalid.", 400)
+                    vals[field_name] = value
             vals["agent_capabilities"] = json.dumps(
                 self._normalize_capabilities(payload.get("capabilities")),
                 separators=(",", ":"),
@@ -437,34 +492,39 @@ class CommunityIotApiController(http.Controller):
             if max_jobs > 100:
                 max_jobs = 100
 
+            document_dispatcher = self._document_dispatcher(box)
             jobs = request.env["community_iot_box.iot_job"].sudo().claim_for_box(
                 box,
                 limit=max_jobs,
                 lease_seconds=900,
                 supported_job_types=self._supported_job_types(box),
+                document_dispatcher=document_dispatcher,
             )
 
             data_jobs = []
             for job in jobs:
                 job_data = {
-                        "job_id": job.id,
-                        "job_type": job.job_type,
-                        "device_key": job.device_key,
-                        "payload": job.payload,
-                        "lock_token": job.lock_token,
-                        "attempt": job.attempt_count,
-                        "lease_expires_at": (
-                            fields.Datetime.to_string(job.lease_expires_at)
-                            if job.lease_expires_at
-                            else False
-                        ),
-                        "created_at": (
-                            fields.Datetime.to_string(job.create_date)
-                            if job.create_date
-                            else False
-                        ),
-                    }
-                if job.job_type == "document_print" and job.document_attachment_id:
+                    "job_id": job.id,
+                    "job_type": job.job_type,
+                    "device_key": job.device_key,
+                    "payload": job.payload,
+                    "lock_token": job.lock_token,
+                    "attempt": job.attempt_count,
+                    "lease_expires_at": fields.Datetime.to_string(job.lease_expires_at) if job.lease_expires_at else False,
+                    "created_at": fields.Datetime.to_string(job.create_date) if job.create_date else False,
+                }
+                if job.job_type == "document_print" and document_dispatcher and document_dispatcher.grouped:
+                    # device_key is the logical/audit identity; document
+                    # dispatch uses the resolved system queue instead.
+                    job_data.update(
+                        {
+                            "cups_printer_name": (
+                                job.device_id.cups_printer_name if job.device_id else False
+                            ),
+                            "dispatch_group_id": job.dispatch_group_id or False,
+                        }
+                    )
+                if job.job_type == "document_print" and job.document_attachment_id and job.document_size and job.document_sha256:
                     job_data["document"] = {
                         "download_path": f"/iot/api/v1/jobs/{job.id}/document",
                         "filename": job.document_filename,
@@ -592,6 +652,10 @@ class CommunityIotApiController(http.Controller):
                     status=400,
                 )
 
+            for lease in leases:
+                if isinstance(lease, dict) and "progress" in lease and not isinstance(lease["progress"], dict):
+                    return self._json_error("IOT_INVALID_PAYLOAD", "Progress must be an object.", 400)
+
             res = request.env["community_iot_box.iot_job"].sudo().renew_lease_for_box(
                 box, leases, default_lease_seconds=900
             )
@@ -635,7 +699,9 @@ class CommunityIotApiController(http.Controller):
                 )
 
             res = request.env["community_iot_box.iot_job"].sudo().apply_results_for_box(
-                box, results
+                box,
+                results,
+                document_dispatcher=self._document_dispatcher(box),
             )
             return self._json_ok(res)
         except OperationalError:
@@ -698,6 +764,8 @@ class CommunityIotApiController(http.Controller):
                     "Field 'devices' must be a list.",
                     status=400,
                 )
+            if len(devices) > 100:
+                return self._json_error("IOT_INVALID_PAYLOAD", "Batch size exceeds maximum limit of 100 items.", 400)
 
             replace_auto_detected = payload.get("replace_auto_detected", True)
             Device = request.env["community_iot_box.iot_device"].sudo()

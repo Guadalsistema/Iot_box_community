@@ -108,7 +108,10 @@ class CommunityIotBox(models.Model):
     @api.depends("agent_capabilities")
     def _compute_pdf_print_capable(self):
         for box in self:
-            box.pdf_print_capable = box.supports_capability("pdf_print_v1")
+            box.pdf_print_capable = (
+                box.supports_capability("pdf_print_v1")
+                or box.supports_capability("pdf_print_v2")
+            )
 
     def supports_capability(self, capability):
         self.ensure_one()

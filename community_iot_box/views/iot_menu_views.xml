@@ -388,7 +388,6 @@ action = {
                         <field name="document_mimetype"/>
                         <field name="document_size"/>
                         <field name="document_sha256"/>
-                        <field name="document_expires_at"/>
                     </group>
 
                     <group string="Errors">

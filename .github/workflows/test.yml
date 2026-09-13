@@ -1,0 +1,125 @@
+name: IoT Box Community – CI tests (PG local)
+
+on:
+  workflow_call:
+  push:
+    branches: [ "17.0" ]
+  pull_request:
+    branches: [ "17.0" ]
+    paths:
+      - Makefile
+      - pyproject.toml
+      - uv.lock
+      - .ruff.toml
+      - scripts/**
+      - community_iot_box/**
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: [ self-hosted, odoo-17 ]
+
+    env:
+      PGUSER: odoo
+      PGPASSWORD: odoo
+      PGDATABASE: odoo
+      LANG: C.UTF-8
+      LC_ALL: C.UTF-8
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python (hosted)
+        if: ${{ !env.ACT }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Setup Python and uv (ACT)
+        if: ${{ env.ACT }}
+        run: |
+          python3 -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install archive tools (ACT)
+        if: ${{ env.ACT }}
+        run: |
+          # The minimal local runner has no package manager privileges.  Keep
+          # the workflow's archive operations available through Python's
+          # standard library instead of changing the Odoo test command.
+          mkdir -p "$RUNNER_TEMP/bin"
+          cat > "$RUNNER_TEMP/bin/zip" <<'PY'
+          #!/usr/bin/env python3
+          import subprocess
+          import sys
+
+          subprocess.run([sys.executable, "-m", "zipfile", "-c", sys.argv[2], sys.argv[3]], check=True)
+          PY
+          cat > "$RUNNER_TEMP/bin/unzip" <<'PY'
+          #!/usr/bin/env python3
+          import subprocess
+          import sys
+
+          subprocess.run([sys.executable, "-m", "zipfile", "-e", sys.argv[2], sys.argv[4]], check=True)
+          PY
+          chmod +x "$RUNNER_TEMP/bin/zip" "$RUNNER_TEMP/bin/unzip"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Export PG bindir to PATH
+        run: |
+          PG_BINDIR=$(ls -d /usr/lib/postgresql/*/bin | head -1)
+          echo "$PG_BINDIR" >> "$GITHUB_PATH"
+
+      # ---------- PostgreSQL ephemeral ----------
+      - name: Init & start local PostgreSQL (pg_ctl)
+        id: pg
+        shell: bash
+        run: |
+          set -e
+          PG_HOME="${{ runner.temp }}/pg"
+          PGPORT=$(shuf -i 20000-40000 -n1)
+          echo "PG_HOME=$PG_HOME" >> "$GITHUB_ENV"
+          echo "PGPORT=$PGPORT" >> "$GITHUB_ENV"
+
+          mkdir -p "$PG_HOME/data"
+          pwfile=$(mktemp)
+          echo "$PGPASSWORD" > "$pwfile"
+
+          # initdb vía pg_ctl: no requiere que el binario esté en PATH
+          pg_ctl initdb -D "$PG_HOME/data" \
+                -o "--encoding=UTF8 --username=$PGUSER --pwfile=$pwfile"
+
+          # arranque rápido, sólo socket unix y puerto aleatorio
+          pg_ctl -D "$PG_HOME/data" -w start -o "-F -k $PG_HOME -p $PGPORT"
+
+      # ---------- General Odoo tests ----------
+      - name: Run all addon tests
+        shell: bash
+        run: |
+          DATA_DIR="${{ runner.temp }}/odoo-data"
+          mkdir -p "$DATA_DIR"
+
+          odoo \
+            -d odoo \
+            -i community_iot_box \
+            --data-dir=$DATA_DIR \
+            --db_host=$PG_HOME \
+            --db_port=$PGPORT \
+            --db_user=$PGUSER \
+            --db_password=$PGPASSWORD \
+            --without-demo=False \
+            --test-enable \
+            --addons-path=$PWD \
+            --log-level=warn \
+            --stop-after-init
+
+      # ---------- Shutdown ----------
+      - name: Stop PostgreSQL
+        if: always()
+        shell: bash
+        run: |
+          pg_ctl -D "${{ runner.temp }}/pg/data" -m fast stop || true
