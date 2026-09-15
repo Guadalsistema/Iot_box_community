@@ -422,6 +422,22 @@ class CommunityIotJob(models.Model):
         return self.sudo().create(vals_list)
 
     @api.model
+    def claim_for_box(
+        self,
+        box,
+        limit=5,
+        lease_seconds=900,
+        supported_job_types=None,
+        document_dispatcher=None,
+    ):
+        dispatch_version = (
+            "v2" if getattr(document_dispatcher, "grouped", False) else "v1"
+        )
+        return self._claim_for_box_impl(
+            box, limit, lease_seconds, supported_job_types, dispatch_version
+        )
+
+    @api.model
     def claim_for_box_v1(
         self,
         box,
@@ -736,6 +752,13 @@ class CommunityIotJob(models.Model):
         rejected = [item[1] for item in rejected_items]
 
         return {"accepted": accepted, "rejected": rejected}
+
+    @api.model
+    def apply_results_for_box(self, box, results, document_dispatcher=None):
+        dispatch_version = (
+            "v2" if getattr(document_dispatcher, "grouped", False) else "v1"
+        )
+        return self._apply_results_for_box_impl(box, results, dispatch_version)
 
     @api.model
     def apply_results_for_box_v1(self, box, results):
