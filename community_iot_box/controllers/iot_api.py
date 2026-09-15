@@ -493,12 +493,17 @@ class CommunityIotApiController(http.Controller):
                 max_jobs = 100
 
             document_dispatcher = self._document_dispatcher(box)
-            jobs = request.env["community_iot_box.iot_job"].sudo().claim_for_box(
+            Job = request.env["community_iot_box.iot_job"].sudo()
+            claim_jobs = (
+                Job.claim_for_box_v2
+                if "pdf_print_v2" in self._box_capabilities(box)
+                else Job.claim_for_box_v1
+            )
+            jobs = claim_jobs(
                 box,
                 limit=max_jobs,
                 lease_seconds=900,
                 supported_job_types=self._supported_job_types(box),
-                document_dispatcher=document_dispatcher,
             )
 
             data_jobs = []
