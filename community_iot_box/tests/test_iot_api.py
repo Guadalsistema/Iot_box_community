@@ -4,6 +4,8 @@ from datetime import timedelta
 from odoo import fields
 from odoo.tests.common import HttpCase, tagged
 
+from .test_iot_document import JPEG_BYTES, WEBP_BYTES
+
 
 @tagged("post_install", "-at_install")
 class TestCommunityIotApiController(HttpCase):
@@ -23,6 +25,9 @@ class TestCommunityIotApiController(HttpCase):
                 "backend": "standard",
                 "interface": "cups",
                 "cups_printer_name": "API_PDF_Printer",
+                "printer_capabilities": json.dumps(
+                    {"document_formats": ["application/pdf", "image/jpeg", "image/webp"]}
+                ),
             }
         )
 
@@ -46,6 +51,16 @@ class TestCommunityIotApiController(HttpCase):
             filename="api-document.pdf",
         )
 
+    def _new_native_job(self, mimetype="image/jpeg"):
+        self.box.agent_capabilities = json.dumps(["document_print_v1"])
+        content = JPEG_BYTES if mimetype == "image/jpeg" else WEBP_BYTES
+        return self.Job._create_document_jobs(
+            device=self.printer,
+            content=content,
+            mimetype=mimetype,
+            filename="native.bin",
+        )
+
     def _document_headers(self, lock_token, box_token=None):
         return {
             "X-IOT-BOX-TOKEN": box_token or self.box.token,
@@ -53,6 +68,7 @@ class TestCommunityIotApiController(HttpCase):
         }
 
     def test_api_document_requires_current_box_lock_and_lease(self):
+        self.box.agent_capabilities = json.dumps(["pdf_print_v2"])
         unclaimed = self._new_pdf_job()
         url = f"/iot/api/v1/jobs/{unclaimed.id}/document"
         response = self.url_open(url, headers=self._document_headers("x" * 32))
@@ -105,6 +121,7 @@ class TestCommunityIotApiController(HttpCase):
         self.assertEqual(expired.status_code, 404)
 
     def test_api_document_rejects_tampered_attachment(self):
+        self.box.agent_capabilities = json.dumps(["pdf_print_v2"])
         job = self._new_pdf_job()
         claimed = self.Job.claim_for_box(
             self.box, limit=1, supported_job_types=["document_print"]
@@ -115,6 +132,62 @@ class TestCommunityIotApiController(HttpCase):
             headers=self._document_headers(claimed.lock_token),
         )
         self.assertEqual(response.status_code, 409)
+
+        image = self._new_native_job()
+        claimed_image = self.Job.claim_for_box_v2(
+            self.box,
+            supported_job_types=["document_print"],
+            supported_document_mimetypes=["image/jpeg"],
+        )
+        image.document_attachment_id.raw = b"\xff\xd8changed-image\xff\xd9"
+        response = self.url_open(
+            f"/iot/api/v1/jobs/{image.id}/document",
+            headers=self._document_headers(claimed_image.lock_token),
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_api_native_document_uses_mime_aware_headers_and_exact_bytes(self):
+        for mimetype in ("image/jpeg", "image/webp"):
+            job = self._new_native_job(mimetype)
+            claimed = self.Job.claim_for_box_v2(
+                self.box,
+                limit=1,
+                supported_job_types=["document_print"],
+                supported_document_mimetypes=[mimetype],
+            )
+            response = self.url_open(
+                f"/iot/api/v1/jobs/{job.id}/document",
+                headers=self._document_headers(claimed.lock_token),
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.content, job.document_attachment_id.raw)
+            self.assertEqual(response.headers["Content-Type"], mimetype)
+            self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+            self.assertEqual(response.headers["Content-Length"], str(len(response.content)))
+
+    def test_pdf_only_agent_cannot_claim_native_document(self):
+        job = self._new_native_job()
+        self.box.agent_capabilities = json.dumps(["pdf_print_v1", "pdf_print_v2"])
+        response = self.url_open(
+            "/iot/api/v1/jobs/poll",
+            data=json.dumps({"max_jobs": 1}),
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["jobs"], [])
+        self.assertEqual(job.state, "pending")
+
+        self.box.agent_capabilities = json.dumps(["document_print_v1"])
+        response = self.url_open(
+            "/iot/api/v1/jobs/poll",
+            data=json.dumps({"max_jobs": 1}),
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        job_data = response.json()["jobs"][0]
+        self.assertEqual(job_data["job_id"], job.id)
+        self.assertEqual(job_data["document"]["mimetype"], "image/jpeg")
+        self.assertIn("dispatch_group_id", job_data)
 
     def test_api_jobs_poll_claims_and_returns_lock_token(self):
         job = self._new_job()
@@ -206,7 +279,9 @@ class TestCommunityIotApiController(HttpCase):
                             "cups_printer_name": "API_PDF_Printer",
                             "capabilities": {
                                 "color_modes": ["color", "monochrome"],
-                                "document_formats": ["application/pdf"],
+                                "document_formats": [
+                                    "application/pdf", "image/jpeg", "image/webp", "image/png"
+                                ],
                                 "media": ["iso_a4_210x297mm"],
                                 "sides": ["one-sided"],
                             },
@@ -226,11 +301,44 @@ class TestCommunityIotApiController(HttpCase):
             json.loads(self.printer.printer_capabilities),
             {
                 "color_modes": ["color", "monochrome"],
-                "document_formats": ["application/pdf"],
+                "document_formats": ["application/pdf", "image/jpeg", "image/webp"],
                 "media": ["iso_a4_210x297mm"],
                 "sides": ["one-sided"],
             },
         )
+
+    def test_device_sync_retains_each_supported_document_format_set(self):
+        format_sets = (
+            ["application/pdf"],
+            ["image/jpeg"],
+            ["image/webp"],
+            ["application/pdf", "image/jpeg", "image/webp"],
+        )
+        for document_formats in format_sets:
+            response = self.url_open(
+                "/iot/api/v1/devices/sync",
+                data=json.dumps(
+                    {
+                        "devices": [{
+                            "name": "API PDF Printer",
+                            "device_key": self.printer.device_key,
+                            "device_type": "standard_printer",
+                            "backend": "cups",
+                            "interface": "cups",
+                            "cups_printer_name": self.printer.cups_printer_name,
+                            "capabilities": {"document_formats": document_formats},
+                        }],
+                        "replace_auto_detected": False,
+                    }
+                ),
+                headers=self._headers(),
+            )
+            self.assertEqual(response.status_code, 200)
+            self.printer.invalidate_recordset(["printer_capabilities"])
+            self.assertEqual(
+                json.loads(self.printer.printer_capabilities)["document_formats"],
+                sorted(document_formats),
+            )
 
     def test_api_jobs_lease_renew(self):
         job = self._new_job()

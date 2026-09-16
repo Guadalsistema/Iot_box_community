@@ -382,7 +382,7 @@ action = {
                         <field name="payload"/>
                     </group>
 
-                    <group string="PDF Document" invisible="job_type != 'document_print'">
+                    <group string="Document" invisible="job_type != 'document_print'">
                         <field name="document_attachment_id"/>
                         <field name="document_filename"/>
                         <field name="document_mimetype"/>

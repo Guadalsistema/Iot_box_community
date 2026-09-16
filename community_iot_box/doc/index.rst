@@ -27,20 +27,22 @@ Architecture
 
 The Odoo addon owns the inventory and queue. The agent registers the box,
 sends heartbeat and device discovery data, claims jobs and reports results.
-The normal ticket, ZPL, cash-drawer and PDF document job types remain separate
+The normal ticket, ZPL, cash-drawer and document job types remain separate
 so retries and idempotency are preserved.
 
-PDF document flow
------------------
+Native document flow
+--------------------
 
-``QWeb PDF -> community_iot_printing -> iot.job -> Agent 0.4.0 -> printer``
+``PDF/JPEG/WebP -> consuming addon -> iot.job -> agent -> printer``
 
-PDFs are stored temporarily as protected ``ir.attachment`` records. A job
+Documents are stored in their original format as protected ``ir.attachment``
+records. A job
 payload contains metadata and a one-time download route, not the document
 bytes. The document endpoint requires the box token and the active job lock;
-the agent validates MIME type, the PDF signature, size and SHA-256 before
-printing. Successful or cancelled documents are deleted immediately; failed
-documents are retained for seven days and then removed by cron.
+the server validates MIME-specific signatures, size and SHA-256 before
+download and before accepting a successful result. Successful or cancelled
+documents are deleted immediately; failed documents are retained for 12 hours
+and then removed by cron.
 
 Configuration
 -------------
@@ -48,8 +50,9 @@ Configuration
 #. Open **IoT Box Community > IoT Boxes** and create a box.
 #. Generate the token and give it only to its matching agent host.
 #. Install and configure Agent 0.4.0 on that host.
-#. Wait for the heartbeat and confirm **Online**, device discovery and the
-   ``pdf_print_v1`` capability when PDF printing is installed.
+#. Wait for the heartbeat and confirm **Online**, device discovery and either
+   ``pdf_print_v1``/``pdf_print_v2`` for PDF-only transport or
+   ``document_print_v1`` for native PDF, JPEG and WebP transport.
 #. Open **IoT Devices**, select a printer and use **Print test page**.
 #. For administrative PDFs, install **Community IoT Printing**, grant the
    **Community IoT Print User** group and use the independent **IoT Print**
@@ -65,9 +68,9 @@ Operations and troubleshooting
 * **Device missing:** verify local discovery and wait for the next heartbeat.
 * **Job pending:** confirm the box is online and inspect **IoT Jobs** for the
   lease and result fields.
-* **PDF unavailable:** use only an online Standard Printer advertising
-  ``pdf_print_v1``; retry a failed document or create a new job if the file has
-  expired.
+* **Document unavailable:** use an online Standard Printer advertising the
+  document's exact MIME type and a matching agent capability; retry a failed
+  document or create a new job if the file has expired.
 
 Security and compatibility
 ---------------------------
