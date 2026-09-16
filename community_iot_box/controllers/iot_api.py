@@ -1,4 +1,3 @@
-import hashlib
 import json
 import logging
 import re
@@ -9,6 +8,7 @@ from psycopg2 import OperationalError
 from odoo import fields, http
 from odoo.http import request
 
+from ..models.iot_job import DOCUMENT_FORMATS
 from ..models.pdf_dispatch_v1 import PdfDispatchV1
 from ..models.pdf_dispatch_v2 import PdfDispatchV2
 
@@ -28,10 +28,12 @@ LEGACY_AGENT_JOB_TYPES = (
 CAPABILITY_JOB_TYPES = {
     "pdf_print_v1": ("document_print",),
     "pdf_print_v2": ("document_print",),
+    "document_print_v1": ("document_print",),
 }
-PDF_DISPATCHERS = {
+DOCUMENT_DISPATCHERS = {
     "pdf_print_v1": PdfDispatchV1(),
     "pdf_print_v2": PdfDispatchV2(),
+    "document_print_v1": PdfDispatchV2(),
 }
 CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 
@@ -136,10 +138,18 @@ class CommunityIotApiController(http.Controller):
 
     def _document_dispatcher(self, box):
         capabilities = self._box_capabilities(box)
-        for capability in ("pdf_print_v2", "pdf_print_v1"):
+        for capability in ("document_print_v1", "pdf_print_v2", "pdf_print_v1"):
             if capability in capabilities:
-                return PDF_DISPATCHERS[capability]
+                return DOCUMENT_DISPATCHERS[capability]
         return None
+
+    def _supported_document_mimetypes(self, box):
+        capabilities = self._box_capabilities(box)
+        if "document_print_v1" in capabilities:
+            return list(DOCUMENT_FORMATS)
+        if "pdf_print_v1" in capabilities or "pdf_print_v2" in capabilities:
+            return ["application/pdf"]
+        return []
 
     def _build_devices_config(self, box):
         devices = []
@@ -228,7 +238,7 @@ class CommunityIotApiController(http.Controller):
         capabilities = {}
         if isinstance(raw_capabilities, dict):
             allowed = {
-                "document_formats": {"application/pdf"},
+                "document_formats": set(DOCUMENT_FORMATS),
                 "color_modes": {"monochrome", "color"},
                 "sides": {"one-sided", "two-sided-long-edge"},
             }
@@ -496,7 +506,7 @@ class CommunityIotApiController(http.Controller):
             Job = request.env["community_iot_box.iot_job"].sudo()
             claim_jobs = (
                 Job.claim_for_box_v2
-                if "pdf_print_v2" in self._box_capabilities(box)
+                if getattr(document_dispatcher, "grouped", False)
                 else Job.claim_for_box_v1
             )
             jobs = claim_jobs(
@@ -504,6 +514,7 @@ class CommunityIotApiController(http.Controller):
                 limit=max_jobs,
                 lease_seconds=900,
                 supported_job_types=self._supported_job_types(box),
+                supported_document_mimetypes=self._supported_document_mimetypes(box),
             )
 
             data_jobs = []
@@ -585,6 +596,7 @@ class CommunityIotApiController(http.Controller):
                 and job.lease_expires_at
                 and job.lease_expires_at > now
                 and job.document_attachment_id
+                and job.document_mimetype in self._supported_document_mimetypes(box)
             )
             if not authorized:
                 return self._json_error(
@@ -595,25 +607,21 @@ class CommunityIotApiController(http.Controller):
 
             attachment = job.document_attachment_id.sudo()
             content = attachment.raw or b""
-            if (
-                job.document_mimetype != "application/pdf"
-                or not content.startswith(b"%PDF-")
-                or len(content) != job.document_size
-                or not secrets.compare_digest(
-                    hashlib.sha256(content).hexdigest(), job.document_sha256 or ""
-                )
-            ):
+            if not job._stored_document_is_valid():
                 return self._json_error(
                     "IOT_DOCUMENT_INVALID",
-                    "The stored PDF failed validation.",
+                    "The stored document failed validation.",
                     status=409,
                 )
 
-            filename = re.sub(r"[^A-Za-z0-9._-]", "_", job.document_filename or "document.pdf")
+            extension = DOCUMENT_FORMATS[job.document_mimetype]["extension"]
+            filename = re.sub(
+                r"[^A-Za-z0-9._-]", "_", job.document_filename or f"document{extension}"
+            )
             return request.make_response(
                 content,
                 headers=[
-                    ("Content-Type", "application/pdf"),
+                    ("Content-Type", job.document_mimetype),
                     ("Content-Length", str(len(content))),
                     ("Content-Disposition", f'attachment; filename="{filename}"'),
                     ("Cache-Control", "no-store, private"),

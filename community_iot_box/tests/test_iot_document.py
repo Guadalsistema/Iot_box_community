@@ -7,6 +7,8 @@ from odoo.tests.common import TransactionCase, tagged
 
 
 PDF_BYTES = b"%PDF-1.4\n% Community IoT Odoo test\n%%EOF\n"
+JPEG_BYTES = b"\xff\xd8\xff\xe0native-jpeg\xff\xd9"
+WEBP_BYTES = b"RIFF\x12\x00\x00\x00WEBPVP8L\x05\x00\x00\x00\x2f\x00\x00\x00\x00\x00"
 
 
 @tagged("post_install", "-at_install")
@@ -30,6 +32,9 @@ class TestCommunityIotDocument(TransactionCase):
                 "backend": "standard",
                 "interface": "cups",
                 "cups_printer_name": "Office_A4",
+                "printer_capabilities": json.dumps(
+                    {"document_formats": ["application/pdf", "image/jpeg", "image/webp"]}
+                ),
             }
         )
         cls.Job = cls.env["community_iot_box.iot_job"]
@@ -60,6 +65,61 @@ class TestCommunityIotDocument(TransactionCase):
         self.assertEqual(set(jobs.mapped("document_mimetype")), {"application/pdf"})
         self.assertTrue(all(len(value) == 64 for value in jobs.mapped("document_sha256")))
         self.assertTrue(all("%PDF" not in payload for payload in jobs.mapped("payload")))
+
+    def test_native_formats_share_document_creation_interface(self):
+        for mimetype, content, filename in (
+            ("application/pdf", PDF_BYTES, "quote.bin"),
+            ("image/jpeg", JPEG_BYTES, "photo.pdf"),
+            ("image/webp", WEBP_BYTES, "preview.jpeg"),
+        ):
+            job = self.Job._create_document_jobs(
+                device=self.device,
+                content=content,
+                mimetype=mimetype,
+                filename=filename,
+            )
+            extension = {"application/pdf": ".pdf", "image/jpeg": ".jpg", "image/webp": ".webp"}[mimetype]
+            self.assertEqual(job.document_mimetype, mimetype)
+            self.assertEqual(job.document_filename, filename.rsplit(".", 1)[0] + extension)
+            self.assertEqual(job.document_size, len(content))
+            self.assertEqual(job.document_sha256, hashlib.sha256(content).hexdigest())
+            self.assertEqual(job.document_attachment_id.raw, content)
+
+    def test_document_creation_rejects_mismatch_and_unsupported_device(self):
+        documents = (
+            ("application/pdf", PDF_BYTES),
+            ("image/jpeg", JPEG_BYTES),
+            ("image/webp", WEBP_BYTES),
+        )
+        for mimetype, _content in documents:
+            with self.assertRaises(ValidationError):
+                self.Job._create_document_jobs(
+                    device=self.device,
+                    content=b"not-the-declared-format",
+                    mimetype=mimetype,
+                    filename="bad.bin",
+                )
+
+        with self.assertRaises(ValidationError):
+            self.Job._create_document_jobs(
+                device=self.device,
+                content=b"\x89PNG\r\n\x1a\n",
+                mimetype="image/png",
+                filename="unsupported.png",
+            )
+
+        all_formats = {mimetype for mimetype, _content in documents}
+        for mimetype, content in documents:
+            self.device.printer_capabilities = json.dumps(
+                {"document_formats": sorted(all_formats - {mimetype})}
+            )
+            with self.assertRaises(ValidationError):
+                self.Job._create_document_jobs(
+                    device=self.device,
+                    content=content,
+                    mimetype=mimetype,
+                    filename="unsupported.bin",
+                )
 
     def test_non_pdf_and_excessive_copies_are_rejected(self):
         with self.assertRaises(ValidationError):
@@ -132,6 +192,55 @@ class TestCommunityIotDocument(TransactionCase):
         )
         self.assertFalse(claimed)
         self.assertEqual(jobs.state, "pending")
+
+    def test_pdf_only_claim_filter_never_leases_native_image(self):
+        image = self.Job._create_document_jobs(
+            device=self.device,
+            content=JPEG_BYTES,
+            mimetype="image/jpeg",
+            filename="photo.jpg",
+        )
+        self.assertFalse(
+            self.Job.claim_for_box_v2(
+                self.box,
+                supported_job_types=["document_print"],
+                supported_document_mimetypes=["application/pdf"],
+            )
+        )
+        self.assertEqual(image.state, "pending")
+
+        claimed = self.Job.claim_for_box_v2(
+            self.box,
+            supported_job_types=["document_print"],
+            supported_document_mimetypes=["application/pdf", "image/jpeg", "image/webp"],
+        )
+        self.assertEqual(claimed, image)
+
+    def test_tampered_document_cannot_report_success(self):
+        job = self.Job._create_document_jobs(
+            device=self.device,
+            content=JPEG_BYTES,
+            mimetype="image/jpeg",
+            filename="photo.jpg",
+        )
+        claimed = self.Job.claim_for_box_v2(
+            self.box,
+            supported_job_types=["document_print"],
+            supported_document_mimetypes=["image/jpeg"],
+        )
+        job.document_attachment_id.raw = b"\xff\xd8tampered\xff\xd9"
+        result = self.Job.apply_results_for_box_v2(
+            self.box,
+            [{
+                "job_id": job.id,
+                "lock_token": claimed.lock_token,
+                "state": "done",
+                "result_id": "tampered-result",
+            }],
+        )
+        self.assertEqual(result["accepted"], 0)
+        self.assertEqual(result["rejected"][0]["reason"], "document_invalid")
+        self.assertEqual(job.state, "processing")
 
     def test_successful_copies_remove_pdf_only_after_last_result(self):
         jobs = self._create_jobs(copies=2)

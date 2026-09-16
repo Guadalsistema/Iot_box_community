@@ -26,19 +26,20 @@ Arquitectura
 
 El addon de Odoo administra el inventario y la cola. El agente registra la
 caja, envía latidos y descubrimiento de dispositivos, reclama trabajos e
-informa resultados. Los trabajos de tickets, ZPL, cajón y documentos PDF se
+informa resultados. Los trabajos de tickets, ZPL, cajón y documentos se
 mantienen separados para conservar reintentos e idempotencia.
 
-Flujo de documentos PDF
------------------------
+Flujo de documentos nativos
+---------------------------
 
-``PDF QWeb -> community_iot_printing -> iot.job -> Agent 0.4.0 -> impresora``
+``PDF/JPEG/WebP -> addon consumidor -> iot.job -> agente -> impresora``
 
-Los PDF se guardan temporalmente como adjuntos ``ir.attachment`` protegidos.
+Los documentos se guardan en su formato original como adjuntos
+``ir.attachment`` protegidos.
 El payload contiene metadatos y una ruta temporal de descarga, no los bytes
 del documento. La ruta exige el token de la caja y el lock activo; el agente
-valida MIME, firma PDF, tamaño y SHA-256 antes de imprimir. Tras éxito o
-cancelación el documento se elimina; los fallidos se conservan siete días y
+valida MIME, firma específica, tamaño y SHA-256 antes de imprimir. Tras éxito
+o cancelación el documento se elimina; los fallidos se conservan 12 horas y
 luego los elimina el cron.
 
 Configuración
@@ -47,8 +48,9 @@ Configuración
 #. Abra **IoT Box Community > IoT Boxes** y cree una caja.
 #. Genere el token y entréguelo únicamente al agente correspondiente.
 #. Instale y configure Agent 0.4.0.
-#. Espere el latido y confirme **Online**, los dispositivos y la capacidad
-   ``pdf_print_v1`` cuando esté instalada la impresión PDF.
+#. Espere el latido y confirme **Online**, los dispositivos y
+   ``pdf_print_v1``/``pdf_print_v2`` para PDF o ``document_print_v1`` para
+   transporte nativo de PDF, JPEG y WebP.
 #. Abra **IoT Devices**, seleccione una impresora y pulse **Print test page**.
 #. Para PDF administrativos, instale **Community IoT Printing**, asigne el
    grupo **Community IoT Print User** y use la acción independiente **IoT
@@ -65,9 +67,9 @@ Operación y solución de problemas
   latido.
 * **Trabajo pendiente:** confirme que la caja esté en línea y revise **IoT
   Jobs**.
-* **PDF no disponible:** use una impresora estándar en línea que anuncie
-  ``pdf_print_v1``; reintente el documento fallido o cree un trabajo nuevo si
-  expiró.
+* **Documento no disponible:** use una impresora estándar en línea que anuncie
+  el MIME exacto y una capacidad compatible; reintente el documento fallido o
+  cree un trabajo nuevo si expiró.
 
 Seguridad y compatibilidad
 --------------------------

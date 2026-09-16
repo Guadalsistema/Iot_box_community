@@ -13,7 +13,7 @@ Features:
 - Windows support is outside the validated scope of this release.
 - Automatic device synchronization from the external agent.
     """,
-    "version": "17.0.6.0.0",
+    "version": "17.0.7.0.0",
     "category": "Technical/IoT",
     "author": "JDA SOLUTIONS",
     "maintainer": "JDA SOLUTIONS",

@@ -10,7 +10,7 @@ from odoo import _, api, exceptions, fields, models
 _logger = logging.getLogger(__name__)
 
 MAX_POSTGRES_INT = 2147483647
-MAX_PDF_BYTES = 25 * 1024 * 1024
+MAX_DOCUMENT_BYTES = 25 * 1024 * 1024
 MAX_DOCUMENT_COPIES = 10
 MAX_DOCUMENT_FILENAME = 128
 DOCUMENT_RETENTION_HOURS = 12
@@ -19,6 +19,38 @@ MAX_RESULT_TEXT = 4096
 MAX_CUPS_JOB_ID = 128
 MAX_PRINTER_REASONS = 1024
 MAX_GROUP_JOBS = 10
+
+DOCUMENT_FORMATS = {
+    "application/pdf": {"extension": ".pdf", "format": "pdf"},
+    "image/jpeg": {"extension": ".jpg", "format": "jpeg"},
+    "image/webp": {"extension": ".webp", "format": "webp"},
+}
+
+
+def is_valid_document_content(content, mimetype):
+    if not isinstance(content, bytes) or not content:
+        return False
+    if mimetype == "application/pdf":
+        return content.startswith(b"%PDF-")
+    if mimetype == "image/jpeg":
+        return content.startswith(b"\xff\xd8") and content.endswith(b"\xff\xd9")
+    if mimetype == "image/webp":
+        if (
+            len(content) < 20
+            or content[:4] != b"RIFF"
+            or content[8:12] != b"WEBP"
+            or int.from_bytes(content[4:8], "little") != len(content) - 8
+            or content[12:16] not in (b"VP8 ", b"VP8L", b"VP8X")
+        ):
+            return False
+        chunk_size = int.from_bytes(content[16:20], "little")
+        if not chunk_size or 20 + chunk_size + (chunk_size % 2) > len(content):
+            return False
+        # Animated WebP is outside the native document contract.
+        return content[12:16] != b"VP8X" or (
+            chunk_size >= 10 and not (content[20] & 0x02)
+        )
+    return False
 
 
 def _parse_strict_job_id(raw_job_id):
@@ -147,7 +179,7 @@ class CommunityIotJob(models.Model):
             ("test_ticket", "Test Ticket"),
             ("test_label", "Test Label"),
             ("test_drawer", "Test Drawer"),
-            ("document_print", "PDF Document Print"),
+            ("document_print", "Document Print"),
         ],
         string="Job Type",
         required=True,
@@ -159,7 +191,7 @@ class CommunityIotJob(models.Model):
     )
     document_attachment_id = fields.Many2one(
         "ir.attachment",
-        string="PDF Attachment",
+        string="Document Attachment",
         copy=False,
         readonly=True,
         ondelete="set null",
@@ -256,34 +288,38 @@ class CommunityIotJob(models.Model):
                     _("A job in state '%s' must be assigned to an IoT Box.") % job.state
                 )
 
-    @api.constrains("job_type", "device_id", "document_attachment_id")
+    @api.constrains(
+        "job_type", "device_id", "state", "document_attachment_id",
+        "document_filename", "document_mimetype", "document_size", "document_sha256",
+    )
     def _check_document_job(self):
         for job in self:
             if job.job_type != "document_print":
                 continue
             if not job.device_id or job.device_id.type != "standard_printer":
                 raise exceptions.ValidationError(
-                    _("PDF documents can only be sent to a Standard Printer device.")
+                    _("Documents can only be sent to a Standard Printer device.")
                 )
             if job.state in ("pending", "processing") and (
                 not job.document_attachment_id
-                or job.document_mimetype != "application/pdf"
+                or job.document_mimetype not in DOCUMENT_FORMATS
             ):
-                raise exceptions.ValidationError(_("Document print jobs require a PDF attachment."))
+                raise exceptions.ValidationError(_("Document print jobs require a supported attachment."))
             if job.state in ("pending", "processing") and not (
                 job.document_filename
-                and 0 < job.document_size <= MAX_PDF_BYTES
+                and 0 < job.document_size <= MAX_DOCUMENT_BYTES
                 and job.document_sha256
                 and len(job.document_sha256) == 64
             ):
-                raise exceptions.ValidationError(_("PDF jobs require complete attachment metadata."))
+                raise exceptions.ValidationError(_("Document jobs require complete attachment metadata."))
 
     @api.model
-    def _create_pdf_jobs(
+    def _create_document_jobs(
         self,
         *,
         device,
-        pdf_content,
+        content,
+        mimetype,
         filename,
         copies=1,
         name=None,
@@ -293,20 +329,28 @@ class CommunityIotJob(models.Model):
         dispatch_group_id=None,
         claim_deadline=None,
     ):
-        """Create bounded PDF jobs after a caller has validated business access.
-
-        This private method is intentionally the only cross-addon elevation point.
-        Odoo RPC does not expose model methods whose names start with an underscore.
-        """
+        """Create bounded native document jobs for a validated printer."""
         device.ensure_one()
         if device.type != "standard_printer" or not device.active or not device.box_id:
             raise exceptions.ValidationError(_("Select an active Standard Printer with an IoT Box."))
         if not device.cups_printer_name:
             raise exceptions.ValidationError(_("The Standard Printer has no system printer name."))
-        if not isinstance(pdf_content, bytes) or not pdf_content.startswith(b"%PDF-"):
-            raise exceptions.ValidationError(_("The generated document is not a valid PDF."))
-        if len(pdf_content) > MAX_PDF_BYTES:
-            raise exceptions.ValidationError(_("The PDF exceeds the 25 MiB limit."))
+        if mimetype not in DOCUMENT_FORMATS:
+            raise exceptions.ValidationError(_("The document MIME type is not supported."))
+        if not is_valid_document_content(content, mimetype):
+            raise exceptions.ValidationError(_("The document content does not match its MIME type."))
+        if len(content) > MAX_DOCUMENT_BYTES:
+            raise exceptions.ValidationError(_("The document exceeds the 25 MiB limit."))
+
+        try:
+            printer_capabilities = json.loads(device.printer_capabilities or "{}")
+        except (TypeError, ValueError):
+            printer_capabilities = {}
+        document_formats = printer_capabilities.get("document_formats", [])
+        if not isinstance(document_formats, list) or mimetype not in document_formats:
+            raise exceptions.ValidationError(
+                _("The selected printer does not advertise support for this document MIME type.")
+            )
 
         try:
             copies = int(copies)
@@ -315,20 +359,20 @@ class CommunityIotJob(models.Model):
         if not 1 <= copies <= MAX_DOCUMENT_COPIES:
             raise exceptions.ValidationError(_("Copies must be between 1 and 10."))
 
-        filename = self._sanitize_document_filename(filename)
-        digest = hashlib.sha256(pdf_content).hexdigest()
+        filename = self._sanitize_document_filename(filename, mimetype)
+        digest = hashlib.sha256(content).hexdigest()
         attachment = self.env["ir.attachment"].sudo().create(
             {
                 "name": filename,
                 "type": "binary",
-                "datas": base64.b64encode(pdf_content),
-                "mimetype": "application/pdf",
+                "datas": base64.b64encode(content),
+                "mimetype": mimetype,
             }
         )
         payload_data = dict(payload or {})
         payload_data.update(
             {
-                "document_format": "pdf",
+                "document_format": DOCUMENT_FORMATS[mimetype]["format"],
                 "document_filename": filename,
             }
         )
@@ -341,8 +385,8 @@ class CommunityIotJob(models.Model):
             "payload": json.dumps(payload_data, ensure_ascii=False),
             "document_attachment_id": attachment.id,
             "document_filename": filename,
-            "document_mimetype": "application/pdf",
-            "document_size": len(pdf_content),
+            "document_mimetype": mimetype,
+            "document_size": len(content),
             "document_sha256": digest,
             "origin_model": origin_model or False,
             "origin_id": origin_id or False,
@@ -363,14 +407,49 @@ class CommunityIotJob(models.Model):
             raise
 
     @api.model
-    def _sanitize_document_filename(self, filename):
+    def _create_pdf_jobs(
+        self,
+        *,
+        device,
+        pdf_content,
+        filename,
+        copies=1,
+        name=None,
+        payload=None,
+        origin_model=None,
+        origin_id=None,
+        dispatch_group_id=None,
+        claim_deadline=None,
+    ):
+        """Create PDF jobs through the MIME-aware document interface.
+
+        This private method is intentionally the only cross-addon elevation point.
+        Odoo RPC does not expose model methods whose names start with an underscore.
+        """
+        return self._create_document_jobs(
+            device=device,
+            content=pdf_content,
+            mimetype="application/pdf",
+            filename=filename,
+            copies=copies,
+            name=name,
+            payload=payload,
+            origin_model=origin_model,
+            origin_id=origin_id,
+            dispatch_group_id=dispatch_group_id,
+            claim_deadline=claim_deadline,
+        )
+
+    @api.model
+    def _sanitize_document_filename(self, filename, mimetype="application/pdf"):
+        extension = DOCUMENT_FORMATS[mimetype]["extension"]
         clean = "".join(
-            char for char in str(filename or "document.pdf") if char.isprintable() and char not in '\\/:*?"<>|'
+            char for char in str(filename or f"document{extension}") if char.isprintable() and char not in '\\/:*?"<>|'
         ).strip(" .")
-        if not clean.lower().endswith(".pdf"):
-            clean = f"{clean or 'document'}.pdf"
-        stem = clean[:-4][: MAX_DOCUMENT_FILENAME - 4].rstrip(" .") or "document"
-        return f"{stem}.pdf"
+        if "." in clean:
+            clean = clean.rsplit(".", 1)[0]
+        stem = clean[: MAX_DOCUMENT_FILENAME - len(extension)].rstrip(" .") or "document"
+        return f"{stem}{extension}"
 
     @api.model
     def _create_ticket_jobs(
@@ -429,12 +508,18 @@ class CommunityIotJob(models.Model):
         lease_seconds=900,
         supported_job_types=None,
         document_dispatcher=None,
+        supported_document_mimetypes=None,
+        document_dispatch_version=None,
     ):
-        dispatch_version = (
-            "v2" if getattr(document_dispatcher, "grouped", False) else "v1"
+        dispatch_version = document_dispatch_version or (
+            "v1"
+            if document_dispatcher is not None
+            and not getattr(document_dispatcher, "grouped", False)
+            else "v2"
         )
         return self._claim_for_box_impl(
-            box, limit, lease_seconds, supported_job_types, dispatch_version
+            box, limit, lease_seconds, supported_job_types, dispatch_version,
+            supported_document_mimetypes,
         )
 
     @api.model
@@ -444,9 +529,13 @@ class CommunityIotJob(models.Model):
         limit=5,
         lease_seconds=900,
         supported_job_types=None,
+        supported_document_mimetypes=None,
     ):
         """Atomically claim pending jobs for v1 PDF dispatch."""
-        return self._claim_for_box_impl(box, limit, lease_seconds, supported_job_types, "v1")
+        return self._claim_for_box_impl(
+            box, limit, lease_seconds, supported_job_types, "v1",
+            supported_document_mimetypes,
+        )
 
     @api.model
     def claim_for_box_v2(
@@ -455,9 +544,13 @@ class CommunityIotJob(models.Model):
         limit=5,
         lease_seconds=900,
         supported_job_types=None,
+        supported_document_mimetypes=None,
     ):
         """Atomically claim pending jobs for v2 PDF dispatch."""
-        return self._claim_for_box_impl(box, limit, lease_seconds, supported_job_types, "v2")
+        return self._claim_for_box_impl(
+            box, limit, lease_seconds, supported_job_types, "v2",
+            supported_document_mimetypes,
+        )
 
     @api.model
     def _claim_for_box_impl(
@@ -467,6 +560,7 @@ class CommunityIotJob(models.Model):
         lease_seconds=900,
         supported_job_types=None,
         dispatch_version="v2",
+        supported_document_mimetypes=None,
     ):
         """Atomically claim pending jobs and recover abandoned leases using CTE."""
         box.ensure_one()
@@ -532,12 +626,21 @@ class CommunityIotJob(models.Model):
             )
 
         # Locks are held until the surrounding Odoo HTTP transaction commits.
+        filter_job_types = supported_job_types is not None
         supported_job_types = list(supported_job_types or [])
-        type_filter_sql = " AND job_type = ANY(%s)" if supported_job_types else ""
+        type_filter_sql = " AND job_type = ANY(%s)" if filter_job_types else ""
+        filter_document_mimetypes = supported_document_mimetypes is not None
+        supported_document_mimetypes = list(supported_document_mimetypes or [])
+        document_filter_sql = (
+            " AND (job_type != 'document_print' OR document_mimetype = ANY(%s))"
+            if filter_document_mimetypes else ""
+        )
         query_params = [box.id]
-        if supported_job_types:
+        if filter_job_types:
             query_params.append(supported_job_types)
-        # Select only the first FIFO row; a PDF group is considered below.  Do
+        if filter_document_mimetypes:
+            query_params.append(supported_document_mimetypes)
+        # Select only the first FIFO row; a document group is considered below. Do
         # not lock this probe: two pollers may see different members of the
         # same group with SKIP LOCKED, and locking those probes before the
         # group lock can deadlock them in opposite directions.
@@ -548,6 +651,7 @@ class CommunityIotJob(models.Model):
                   WHERE box_id = %s
                     AND state = 'pending'
                     {type_filter_sql}
+                    {document_filter_sql}
                   ORDER BY create_date ASC, id ASC
                   LIMIT 1
             """,
@@ -555,10 +659,10 @@ class CommunityIotJob(models.Model):
         )
         ids = [row[0] for row in self.env.cr.fetchall()]
         jobs = self.browse(ids)
-        # pdf_print_v2 claims a complete dispatch group, never a partial batch.
+        # Grouped document protocols claim a complete group, never a partial batch.
         if (
             pdf_dispatch.grouped
-            and "document_print" in supported_job_types
+            and (not filter_job_types or "document_print" in supported_job_types)
             and jobs
             and jobs[0].job_type == "document_print"
         ):
@@ -574,10 +678,12 @@ class CommunityIotJob(models.Model):
                 if not self.env.cr.fetchone()[0]:
                     return self.browse()
                 self.env.cr.execute(
-                    """SELECT id FROM community_iot_box_iot_job
+                    f"""SELECT id FROM community_iot_box_iot_job
                        WHERE box_id = %s AND dispatch_group_id = %s AND state = 'pending'
+                         {document_filter_sql.replace('job_type', 'community_iot_box_iot_job.job_type').replace('document_mimetype', 'community_iot_box_iot_job.document_mimetype')}
                        ORDER BY id FOR UPDATE""",
-                    [box.id, first.dispatch_group_id],
+                    [box.id, first.dispatch_group_id]
+                    + ([supported_document_mimetypes] if filter_document_mimetypes else []),
                 )
                 group_ids = self.browse([row[0] for row in self.env.cr.fetchall()])
                 group_size = self.search_count(
@@ -607,7 +713,8 @@ class CommunityIotJob(models.Model):
                      WHERE box_id = %s
                        AND state = 'pending'
                        {non_group_document_filter}
-                       {type_filter_sql}
+                        {type_filter_sql}
+                        {document_filter_sql}
                      ORDER BY create_date ASC, id ASC
                      FOR UPDATE SKIP LOCKED
                      LIMIT %s
@@ -756,7 +863,10 @@ class CommunityIotJob(models.Model):
     @api.model
     def apply_results_for_box(self, box, results, document_dispatcher=None):
         dispatch_version = (
-            "v2" if getattr(document_dispatcher, "grouped", False) else "v1"
+            "v1"
+            if document_dispatcher is not None
+            and not getattr(document_dispatcher, "grouped", False)
+            else "v2"
         )
         return self._apply_results_for_box_impl(box, results, dispatch_version)
 
@@ -772,7 +882,7 @@ class CommunityIotJob(models.Model):
 
     @api.model
     def _apply_results_for_box_impl(self, box, results, dispatch_version="v2"):
-        """Apply results for PDF jobs with appropriate dispatch policy."""
+        """Apply results for document jobs with the selected dispatch policy."""
         box.ensure_one()
         
         # Import here to avoid circular dependencies
@@ -955,6 +1065,9 @@ class CommunityIotJob(models.Model):
             error_message = result.get("error_message")
 
             if final_state == "done":
+                if job.job_type == "document_print" and not job._stored_document_is_valid():
+                    rejected_items.append((idx, {"job_id": job_id, "reason": "document_invalid"}))
+                    continue
                 result_id = result.get("result_id") or secrets.token_urlsafe(24)
                 job.write({"result_id": result_id[:64]})
                 job.finish_from_agent(
@@ -1049,9 +1162,9 @@ class CommunityIotJob(models.Model):
     def action_retry_document(self):
         for job in self:
             if job.job_type != "document_print" or job.state != "error":
-                raise exceptions.UserError(_("Only failed PDF document jobs can be retried."))
+                raise exceptions.UserError(_("Only failed document jobs can be retried."))
             if not job.document_attachment_id:
-                raise exceptions.UserError(_("The PDF is no longer available; create a new print job."))
+                raise exceptions.UserError(_("The document is no longer available; create a new print job."))
             if job.dispatch_group_id and self.search_count(
                 [
                     ("box_id", "=", job.box_id.id),
@@ -1059,7 +1172,7 @@ class CommunityIotJob(models.Model):
                 ]
             ) > 1:
                 raise exceptions.UserError(
-                    _("Grouped PDF document jobs cannot be retried individually.")
+                    _("Grouped document jobs cannot be retried individually.")
                 )
             job.release_for_retry()
         return True
@@ -1067,7 +1180,7 @@ class CommunityIotJob(models.Model):
     def action_cancel_document(self):
         for job in self:
             if job.job_type != "document_print" or job.state not in ("pending", "error"):
-                raise exceptions.UserError(_("Only pending or failed PDF document jobs can be cancelled."))
+                raise exceptions.UserError(_("Only pending or failed document jobs can be cancelled."))
             job.write({"state": "cancelled"})
             job._cleanup_document_if_complete()
         return True
@@ -1080,6 +1193,19 @@ class CommunityIotJob(models.Model):
                 continue
             related.write({"document_attachment_id": False})
             attachment.sudo().unlink()
+
+    def _stored_document_is_valid(self):
+        self.ensure_one()
+        content = self.document_attachment_id.sudo().raw or b""
+        return bool(
+            self.document_mimetype in DOCUMENT_FORMATS
+            and self.document_attachment_id.mimetype == self.document_mimetype
+            and is_valid_document_content(content, self.document_mimetype)
+            and len(content) == self.document_size
+            and secrets.compare_digest(
+                hashlib.sha256(content).hexdigest(), self.document_sha256 or ""
+            )
+        )
 
     @api.model
     def _cron_cleanup_expired_documents(self):

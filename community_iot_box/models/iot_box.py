@@ -48,7 +48,7 @@ class CommunityIotBox(models.Model):
         help="JSON list of bounded capabilities advertised by the installed agent.",
     )
     pdf_print_capable = fields.Boolean(
-        string="PDF Printing Available",
+        string="Document Printing Available",
         compute="_compute_pdf_print_capable",
         store=True,
     )
@@ -111,6 +111,7 @@ class CommunityIotBox(models.Model):
             box.pdf_print_capable = (
                 box.supports_capability("pdf_print_v1")
                 or box.supports_capability("pdf_print_v2")
+                or box.supports_capability("document_print_v1")
             )
 
     def supports_capability(self, capability):
