@@ -37,6 +37,30 @@ class TestCommunityIotApiController(HttpCase):
             "Content-Type": "application/json",
         }
 
+    def test_successful_heartbeat_recovers_expired_box_and_clears_alert(self):
+        self.env["ir.config_parameter"].sudo().set_param(
+            "community_iot_box.heartbeat_timeout_seconds", "180"
+        )
+        self.box.write({
+            "state": "online",
+            "last_seen": fields.Datetime.now() - timedelta(hours=3),
+        })
+        Box = self.env["community_iot_box.iot_box"]
+        before = Box.get_dashboard_data()
+        self.assertEqual(self.box.state, "offline")
+        self.assertIn(f"box-{self.box.id}", [alert["key"] for alert in before["alerts"]])
+        response = self.url_open(
+            "/iot/api/v1/heartbeat", data=json.dumps({"status": "ok"}),
+            headers=self._headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.box.invalidate_recordset(["state", "last_seen"])
+        self.assertEqual(self.box.state, "online")
+        self.assertGreater(self.box.last_seen, fields.Datetime.now() - timedelta(seconds=180))
+        after = Box.get_dashboard_data()
+        self.assertNotIn(f"box-{self.box.id}", [alert["key"] for alert in after["alerts"]])
+        self.assertEqual(after["metrics"]["boxes_online"], before["metrics"]["boxes_online"] + 1)
+
     def _new_job(self, **kwargs):
         kwargs.setdefault("name", "API Test Job")
         kwargs.setdefault("box_id", self.box.id)

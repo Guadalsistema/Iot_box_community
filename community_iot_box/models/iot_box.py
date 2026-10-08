@@ -1,5 +1,6 @@
 import json
 import secrets
+from datetime import timedelta
 
 from odoo import api, fields, models
 
@@ -62,7 +63,7 @@ class CommunityIotBox(models.Model):
         string="Status",
         default="draft",
         required=True,
-        help="Overall IoT Box status according to its latest heartbeat.",
+        help="Latest reported status; Online expires when the heartbeat grace period is exceeded.",
     )
     last_seen = fields.Datetime(
         string="Last Seen",
@@ -123,6 +124,51 @@ class CommunityIotBox(models.Model):
         return capability in capabilities
 
     @api.model
+    def _heartbeat_timeout_seconds(self):
+        value = self.env["ir.config_parameter"].sudo().get_param(
+            "community_iot_box.heartbeat_timeout_seconds", "180"
+        )
+        try:
+            seconds = int(value)
+        except (TypeError, ValueError):
+            return 180
+        return seconds if seconds > 0 else 180
+
+    @api.model
+    def _expire_stale_heartbeats(self, domain=None):
+        """Persist Offline, without overwriting a concurrent successful heartbeat."""
+        now = fields.Datetime.now()
+        cutoff = now - timedelta(seconds=self._heartbeat_timeout_seconds())
+        self.flush_model(["state", "last_seen"])
+        boxes = self.search((domain or []) + [
+            ("state", "=", "online"),
+            "|", ("last_seen", "=", False), ("last_seen", "<", cutoff),
+        ])
+        if not boxes:
+            return 0
+
+        # Recheck freshness in the UPDATE: the agent may have renewed last_seen
+        # after the search. PostgreSQL serializes concurrent writes to the box.
+        self.env.cr.execute(
+            """
+            UPDATE community_iot_box_iot_box
+               SET state = 'offline', write_date = %s, write_uid = %s
+             WHERE id IN %s AND state = 'online'
+               AND (last_seen IS NULL OR last_seen < %s)
+            RETURNING id
+            """,
+            (now, self.env.uid, tuple(boxes.ids), cutoff),
+        )
+        expired = self.browse([row[0] for row in self.env.cr.fetchall()])
+        expired.invalidate_recordset(["state", "write_date", "write_uid"])
+        expired.modified(["state"])
+        return len(expired)
+
+    @api.model
+    def _cron_expire_stale_heartbeats(self):
+        return self.sudo()._expire_stale_heartbeats()
+
+    @api.model
     def get_dashboard_data(self):
         """Return the operational dashboard without exposing box tokens."""
         self.check_access_rights("read")
@@ -136,6 +182,7 @@ class CommunityIotBox(models.Model):
         job_domain = [("company_id", "in", company_ids)]
         device_domain = [("box_id.company_id", "in", company_ids)]
 
+        self.sudo()._expire_stale_heartbeats(box_domain)
         boxes = self.search(box_domain, order="state, name, id", limit=6)
         recent_jobs = Job.search(
             job_domain,
@@ -318,6 +365,7 @@ class CommunityIotBox(models.Model):
 
     def action_test_connection(self):
         self.ensure_one()
+        self.sudo()._expire_stale_heartbeats([("id", "=", self.id)])
         if not self.active:
             return self._notification(
                 title="Test connection",
@@ -357,7 +405,7 @@ class CommunityIotBox(models.Model):
             else str(self.last_seen)
         )
 
-        if self.state == "online" and elapsed_seconds <= 60:
+        if self.state == "online":
             return self._notification(
                 title="Test connection",
                 message=(

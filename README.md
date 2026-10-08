@@ -56,6 +56,40 @@ The external IoT agent is not included in this repository.
    - IoT token
 6. Confirm the heartbeat and discovered devices in Odoo, then run a test print.
 
+## Heartbeat monitoring
+
+An Online box becomes Offline when its last heartbeat is **more than 180 seconds**
+old (or is missing). This grace period tolerates transient missed heartbeats.
+A successful heartbeat (`status: "ok"`) restores Online and clears the offline
+warning. Draft boxes remain Draft and reported Error states are preserved.
+
+The `odoo-cups-agent` implementation sends a heartbeat in every polling cycle
+(`Agent.poll_once`), with a default two-second pause after successful cycles.
+Failed cycles back off up to 60 seconds with ±20% jitter (up to 72 seconds),
+and control-plane HTTP calls default to a ten-second timeout. The three-minute
+grace period allows transient failed cycles rather than expiring on one missed
+heartbeat. Cycle work and CUPS/network delays can lengthen the actual interval.
+
+Administrators can override the grace period in **Settings → Technical →
+Parameters → System Parameters** with the key
+`community_iot_box.heartbeat_timeout_seconds` and a positive integer in seconds.
+Missing, invalid or nonpositive values use 180 seconds. Confirm the deployed
+agent's configured heartbeat interval and set the grace period
+to allow several missed heartbeats, including normal network/request delays.
+
+The scheduled action **Community IoT: expire stale heartbeats** runs every minute,
+independently of print jobs. Box kanban/list/form views show the persisted status
+on their next read after this check (normally within 60 seconds after expiration,
+provided Odoo's scheduler is running). The dashboard also expires stale heartbeats
+when opened or manually refreshed. It reports a snapshot and does not refresh
+automatically. The connection test applies the same grace period. The scheduled
+check's timing excludes server delays.
+
+Upgrade the installed `community_iot_box` addon to load the new scheduled action.
+
+Regression tests: run `sh scripts/run-tests.sh` in an Odoo 17/PostgreSQL test
+environment.
+
 ## Agent distribution
 
 The agent is a separate product and release stream distributed by JDA SOLUTIONS.

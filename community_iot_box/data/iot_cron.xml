@@ -1,5 +1,15 @@
 <?xml version="1.0" encoding="utf-8"?>
 <odoo noupdate="1">
+    <record id="ir_cron_expire_stale_iot_heartbeats" model="ir.cron">
+        <field name="name">Community IoT: expire stale heartbeats</field>
+        <field name="model_id" ref="model_community_iot_box_iot_box"/>
+        <field name="state">code</field>
+        <field name="code">model._cron_expire_stale_heartbeats()</field>
+        <field name="user_id" ref="base.user_root"/>
+        <field name="interval_number">1</field>
+        <field name="interval_type">minutes</field>
+        <field name="active">True</field>
+    </record>
     <record id="ir_cron_cleanup_expired_iot_documents" model="ir.cron">
         <field name="name">Community IoT: clean expired documents</field>
         <field name="model_id" ref="model_community_iot_box_iot_job"/>

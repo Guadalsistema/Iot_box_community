@@ -1,3 +1,6 @@
+from datetime import timedelta
+from unittest.mock import patch
+
 from odoo import fields
 from odoo.tests.common import TransactionCase, tagged
 
@@ -10,6 +13,9 @@ class TestCommunityIotDashboard(TransactionCase):
         cls.Box = cls.env["community_iot_box.iot_box"]
         cls.Device = cls.env["community_iot_box.iot_device"]
         cls.Job = cls.env["community_iot_box.iot_job"]
+        cls.env["ir.config_parameter"].sudo().set_param(
+            "community_iot_box.heartbeat_timeout_seconds", "180"
+        )
 
         cls.online_box = cls.Box.create(
             {
@@ -84,3 +90,29 @@ class TestCommunityIotDashboard(TransactionCase):
         for alert in data["alerts"]:
             self.assertIsInstance(alert["key"], str)
             self.assertIn(alert["level"], {"warning", "danger"})
+
+    def test_stale_heartbeat_updates_metrics_cards_alerts_and_connection_test(self):
+        now = fields.Datetime.now()
+        self.online_box.last_seen = now - timedelta(hours=3)
+        with patch.object(fields.Datetime, "now", return_value=now):
+            data = self.Box.get_dashboard_data()
+            self.assertEqual(self.online_box.state, "offline")
+            self.assertEqual(self.online_box.read(["state"])[0]["state"], "offline")
+            card = next(item for item in data["boxes"] if item["id"] == self.online_box.id)
+            self.assertEqual(card["state"], "offline")
+            self.assertEqual(data["metrics"]["boxes_online"], self.Box.search_count([
+                ("company_id", "in", self.env.companies.ids), ("state", "=", "online"),
+            ]))
+            self.assertGreaterEqual(data["metrics"]["attention"], 3)
+            alert = next(item for item in data["alerts"] if item["key"] == f"box-{self.online_box.id}")
+            self.assertEqual(alert["level"], "warning")
+            self.assertEqual(self.online_box.action_test_connection()["params"]["type"], "warning")
+
+    def test_connection_test_uses_grace_period_before_cron_runs(self):
+        now = fields.Datetime.now()
+        with patch.object(fields.Datetime, "now", return_value=now):
+            self.online_box.last_seen = now - timedelta(seconds=120)
+            self.assertEqual(self.online_box.action_test_connection()["params"]["type"], "success")
+            self.online_box.last_seen = now - timedelta(seconds=181)
+            self.assertEqual(self.online_box.action_test_connection()["params"]["type"], "warning")
+            self.assertEqual(self.online_box.state, "offline")
