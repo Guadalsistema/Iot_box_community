@@ -55,6 +55,11 @@ class CommunityIotDevice(models.Model):
         readonly=True,
         help="Validated print capabilities reported by the IoT agent.",
     )
+    health_status = fields.Selection(
+        [("unknown", "Unknown"), ("connected", "Connected"), ("disconnected", "Disconnected")],
+        string="Health Status", default="unknown", readonly=True,
+    )
+    health_checked_at = fields.Datetime(string="Health Checked At", readonly=True)
 
     device_key = fields.Char(
         string="Device Key",

@@ -2,6 +2,7 @@ import json
 import logging
 import re
 import secrets
+from datetime import datetime, timezone
 
 from psycopg2 import OperationalError
 
@@ -205,32 +206,35 @@ class CommunityIotApiController(http.Controller):
         if not isinstance(payload, dict):
             return None
 
-        name = (payload.get("name") or payload.get("device_key") or "").strip()
+        def text(*values):
+            return next((value.strip() for value in values if isinstance(value, str) and value.strip()), "")
+
+        name = text(payload.get("name"), payload.get("device_key"))
         if not name:
             return None
 
-        device_type = (payload.get("device_type") or "standard_printer").strip()
+        device_type = text(payload.get("device_type")) or "standard_printer"
         if device_type not in {"ticket_printer", "standard_printer", "label_printer", "drawer", "other"}:
             device_type = "standard_printer"
 
-        backend = (payload.get("backend") or "standard").strip()
+        backend = text(payload.get("backend")) or "standard"
         if backend not in {"escpos", "zpl", "standard", "cups", "cups_generic", "other"}:
             backend = "standard"
 
-        interface = (payload.get("interface") or payload.get("connection_type") or "other").strip()
+        interface = text(payload.get("interface"), payload.get("connection_type")) or "other"
         if interface not in {"usb", "network", "serial", "cups", "other"}:
             interface = "other"
 
-        auto_identifier = (payload.get("auto_identifier") or "").strip()
+        auto_identifier = text(payload.get("auto_identifier"))
         if not auto_identifier:
             auto_identifier = f"{interface}:{name}"
 
-        device_key = (payload.get("device_key") or "").strip()
+        device_key = text(payload.get("device_key"))
         if not device_key:
             slug = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "device"
             device_key = f"auto_{slug[:45]}"
 
-        ticket_mode = (payload.get("ticket_mode") or "standard").strip()
+        ticket_mode = text(payload.get("ticket_mode")) or "standard"
         if ticket_mode not in {"narrow", "wide", "standard"}:
             ticket_mode = "standard"
 
@@ -264,6 +268,20 @@ class CommunityIotApiController(http.Controller):
                     }
                 )
 
+        health_status, health_checked_at = "unknown", False
+        raw_status, raw_checked = payload.get("health_status"), payload.get("health_checked_at")
+        if isinstance(raw_status, str) and raw_status in {"connected", "disconnected"} and isinstance(raw_checked, str):
+            try:
+                checked = datetime.fromisoformat(raw_checked.replace("Z", "+00:00"))
+                if checked.tzinfo is None:
+                    raise ValueError("timestamp must include timezone")
+                checked = checked.astimezone(timezone.utc).replace(tzinfo=None)
+                now = fields.Datetime.to_datetime(fields.Datetime.now())
+                if checked <= now:
+                    health_status, health_checked_at = raw_status, checked
+            except (TypeError, ValueError, OverflowError):
+                pass
+
         return {
             "name": name,
             "device_key": device_key,
@@ -283,10 +301,12 @@ class CommunityIotApiController(http.Controller):
             "discovery_source": payload.get("discovery_source"),
             "discovery_payload": json.dumps(payload, ensure_ascii=False, sort_keys=True),
             "printer_capabilities": json.dumps(capabilities, sort_keys=True),
+            "health_status": health_status,
+            "health_checked_at": health_checked_at,
         }
 
     def _find_existing_detected_device(self, box, normalized):
-        Device = request.env["community_iot_box.iot_device"].sudo()
+        Device = request.env["community_iot_box.iot_device"].sudo().with_context(active_test=False)
         box_domain = [("box_id", "=", box.id)]
 
         auto_identifier = normalized.get("auto_identifier")
@@ -317,12 +337,13 @@ class CommunityIotApiController(http.Controller):
 
     def _prepare_detected_device_vals(self, normalized, record=None):
         vals = {
-            "active": True,
             "auto_detected": not record or record.auto_detected,
             "auto_identifier": normalized.get("auto_identifier"),
             "discovery_source": normalized.get("discovery_source"),
             "last_discovered_at": fields.Datetime.now(),
             "discovery_payload": normalized.get("discovery_payload"),
+            "health_status": normalized.get("health_status", "unknown"),
+            "health_checked_at": normalized.get("health_checked_at") or False,
         }
 
         if not record or record.auto_detected or not record.name:
@@ -777,11 +798,17 @@ class CommunityIotApiController(http.Controller):
                     "Field 'devices' must be a list.",
                     status=400,
                 )
+            if any(not isinstance(item, dict) for item in devices):
+                return self._json_error(
+                    "IOT_INVALID_PAYLOAD",
+                    "Each device must be an object.",
+                    status=400,
+                )
             if len(devices) > 100:
                 return self._json_error("IOT_INVALID_PAYLOAD", "Batch size exceeds maximum limit of 100 items.", 400)
 
             replace_auto_detected = payload.get("replace_auto_detected", True)
-            Device = request.env["community_iot_box.iot_device"].sudo()
+            Device = request.env["community_iot_box.iot_device"].sudo().with_context(active_test=False)
             # Serialize discovery for one box. Concurrent retry requests must
             # not both search before either creates the same device.
             request.env.cr.execute(

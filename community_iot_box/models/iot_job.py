@@ -154,6 +154,54 @@ class CommunityIotJob(models.Model):
         help="Internal job status (pending/processing/done/error/cancelled).",
     )
 
+    def cancel_if_pending(self):
+        """Cancel only jobs which have not been claimed by an IoT poller.
+
+        The row lock serializes this decision with the claim query: whichever
+        transaction acquires it first determines whether the job is cancelled
+        or becomes processing.
+        """
+        if not self:
+            return self
+        self.flush_recordset(["state", "lock_token", "claimed_at", "lease_expires_at"])
+        self.env.cr.execute(
+            """SELECT id FROM community_iot_box_iot_job
+                 WHERE id = ANY(%s) AND state = 'pending'
+                 ORDER BY id FOR UPDATE""",
+            [self.ids],
+        )
+        ids = [row[0] for row in self.env.cr.fetchall()]
+        pending = self.browse(ids)
+        pending.invalidate_recordset(["state"])
+        pending = pending.filtered(lambda job: job.state == "pending")
+        pending.write({
+            "state": "cancelled", "lock_token": False,
+            "claimed_at": False, "lease_expires_at": False,
+        })
+        return pending
+
+    def resolve_uncertain(self, message=None):
+        """Invalidate active leases without asserting that physical work stopped."""
+        if not self:
+            return self
+        self.flush_recordset(["state", "lock_token", "claimed_at", "lease_expires_at"])
+        self.env.cr.execute(
+            """SELECT id FROM community_iot_box_iot_job
+                 WHERE id = ANY(%s) AND state = 'processing'
+                 ORDER BY id FOR UPDATE""",
+            [self.ids],
+        )
+        processing = self.browse([row[0] for row in self.env.cr.fetchall()])
+        processing.invalidate_recordset(["state"])
+        processing = processing.filtered(lambda job: job.state == "processing")
+        processing.write({
+            "state": "uncertain", "lock_token": False,
+            "claimed_at": False, "lease_expires_at": False,
+            "error_code": "operator_uncertain",
+            "error_message": message or "Operator marked outcome uncertain; physical printing may continue.",
+        })
+        return processing
+
     company_id = fields.Many2one(
         "res.company",
         string="Company",

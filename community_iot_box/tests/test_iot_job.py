@@ -48,6 +48,36 @@ class TestCommunityIotJobLease(TransactionCase):
         self.assertEqual(job.attempt_count, 1)
         self.assertTrue(job.lease_expires_at > job.claimed_at)
 
+    def test_cancel_if_pending_does_not_cancel_claimed_job(self):
+        claimed = self._new_job(name="Claimed cancellation")
+        pending = self._new_job(name="Pending cancellation")
+        self.Job.claim_for_box(self.box, limit=1)
+
+        cancelled = (pending | claimed).cancel_if_pending()
+
+        self.assertEqual(cancelled, pending)
+        self.assertEqual(pending.state, "cancelled")
+        self.assertEqual(claimed.state, "processing")
+        self.assertTrue(claimed.lock_token)
+
+    def test_resolve_uncertain_invalidates_processing_lease(self):
+        job = self._new_job()
+        claimed = self.Job.claim_for_box(self.box, limit=1)
+        token = claimed.lock_token
+
+        claimed.resolve_uncertain()
+        result = self.Job.apply_results_for_box(
+            self.box,
+            [{"job_id": job.id, "lock_token": token, "state": "done"}],
+        )
+
+        self.assertEqual(job.state, "uncertain")
+        self.assertFalse(job.lock_token)
+        self.assertFalse(job.claimed_at)
+        self.assertFalse(job.lease_expires_at)
+        self.assertEqual(result["accepted"], 0)
+        self.assertEqual(result["rejected"][0]["reason"], "stale_lease")
+
     def test_two_jobs_claimed_receive_distinct_tokens(self):
         job1 = self._new_job(name="Job 1")
         job2 = self._new_job(name="Job 2")

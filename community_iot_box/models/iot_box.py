@@ -184,6 +184,8 @@ class CommunityIotBox(models.Model):
 
         self.sudo()._expire_stale_heartbeats(box_domain)
         boxes = self.search(box_domain, order="state, name, id", limit=6)
+        now = fields.Datetime.to_datetime(fields.Datetime.now())
+        freshness = timedelta(minutes=5)
         recent_jobs = Job.search(
             job_domain,
             order="create_date desc, id desc",
@@ -217,7 +219,45 @@ class CommunityIotBox(models.Model):
         job_type_labels = dict(Job._fields["job_type"].selection)
 
         box_cards = []
+        enabled_configured_total = reachable_total = 0
+        all_devices = Device.with_context(active_test=False).search(device_domain)
+        devices_by_box = {}
+        for device in all_devices:
+            devices_by_box.setdefault(device.box_id.id, Device.browse())
+            devices_by_box[device.box_id.id] |= device
+        for device in all_devices:
+            checked = fields.Datetime.to_datetime(device.health_checked_at) if device.health_checked_at else None
+            if device.active:
+                enabled_configured_total += 1
+                if device.health_status == "connected" and checked and timedelta(0) <= now - checked <= freshness:
+                    reachable_total += 1
         for box in boxes:
+            heartbeat = fields.Datetime.to_datetime(box.last_seen) if box.last_seen else None
+            heartbeat_fresh = bool(heartbeat and timedelta(0) <= now - heartbeat <= freshness)
+            devices = devices_by_box.get(box.id, Device.browse())
+            enabled = devices.filtered("active")
+            reachable = enabled.filtered(
+                lambda device: device.health_status == "connected"
+                and device.health_checked_at
+                and timedelta(0) <= now - fields.Datetime.to_datetime(device.health_checked_at) <= freshness
+            )
+            if not heartbeat_fresh:
+                health_state, health_label = "red", "Offline"
+            elif not enabled or len(reachable) != len(enabled):
+                health_state, health_label = "yellow", "Attention"
+            else:
+                health_state, health_label = "normal", "Ready"
+            device_cards = []
+            for device in devices:
+                checked = fields.Datetime.to_datetime(device.health_checked_at) if device.health_checked_at else None
+                current = bool(checked and timedelta(0) <= now - checked <= freshness)
+                status = device.health_status if current else "unknown"
+                device_cards.append({
+                    "id": device.id, "name": device.name, "active": device.active,
+                    "health_status": status,
+                    "health_label": {"connected": "Connected", "disconnected": "Disconnected", "unknown": "Unknown"}[status],
+                    "health_checked_at": fields.Datetime.to_string(device.health_checked_at) if device.health_checked_at else False,
+                })
             box_cards.append(
                 {
                     "id": box.id,
@@ -234,6 +274,11 @@ class CommunityIotBox(models.Model):
                     ),
                     "device_count": box.device_count,
                     "token_configured": bool(box.token),
+                    "health_state": health_state,
+                    "health_label": health_label,
+                    "enabled_configured_count": len(enabled),
+                    "reachable_count": len(reachable),
+                    "devices": device_cards,
                 }
             )
 
@@ -304,6 +349,8 @@ class CommunityIotBox(models.Model):
                 "boxes_total": boxes_total,
                 "boxes_online": boxes_online,
                 "devices_total": devices_total,
+                "enabled_configured": enabled_configured_total,
+                "reachable_devices": reachable_total,
                 "jobs_pending": jobs_pending,
                 "attention": boxes_attention + jobs_error,
             },

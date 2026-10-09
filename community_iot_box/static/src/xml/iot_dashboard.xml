@@ -73,6 +73,19 @@
                             <small>configured on boxes</small>
                         </span>
                     </button>
+                    <div class="o_ciot_metric o_ciot_metric_health" role="status">
+                        <span class="o_ciot_metric_icon o_ciot_metric_icon_devices">
+                            <i class="fa fa-heartbeat"/>
+                        </span>
+                        <span class="o_ciot_metric_content">
+                            <span class="o_ciot_metric_label">Printer health</span>
+                            <strong>
+                                <t t-out="state.data.metrics.reachable_devices || 0"/> /
+                                <t t-out="state.data.metrics.enabled_configured || 0"/>
+                            </strong>
+                            <small>reachable / enabled configured</small>
+                        </span>
+                    </div>
                     <button type="button" class="o_ciot_metric" t-on-click="openJobs">
                         <span class="o_ciot_metric_icon o_ciot_metric_icon_jobs">
                             <i class="fa fa-tasks"/>
@@ -125,6 +138,7 @@
                                         <i class="fa fa-circle"/>
                                         <span t-out="box.state_label"/>
                                     </span>
+                                    <span t-att-class="'o_ciot_status o_ciot_health_' + box.health_state" t-out="box.health_label"/>
                                 </div>
                                 <dl class="o_ciot_box_details">
                                     <dt>Company</dt>
@@ -149,10 +163,18 @@
                                         <t t-out="box.last_seen || 'No communication'"/>
                                     </span>
                                     <strong>
-                                        <t t-out="box.device_count"/>
-                                        <small> devices</small>
+                                        <t t-out="box.reachable_count"/> / <t t-out="box.enabled_configured_count"/>
+                                        <small> reachable / configured</small>
                                     </strong>
                                 </div>
+                                <ul class="o_ciot_device_health">
+                                    <li t-foreach="box.devices" t-as="device" t-key="device.id">
+                                        <span t-out="device.name"/> — <span t-out="device.health_label"/>
+                                        <small t-if="device.health_checked_at" t-out="device.health_checked_at"/>
+                                        <small t-else="">Never checked</small>
+                                        <small t-if="not device.active">(disabled)</small>
+                                    </li>
+                                </ul>
                             </button>
                         </div>
                         <div t-else="" class="o_ciot_empty">

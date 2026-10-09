@@ -61,6 +61,63 @@ class TestCommunityIotApiController(HttpCase):
         self.assertNotIn(f"box-{self.box.id}", [alert["key"] for alert in after["alerts"]])
         self.assertEqual(after["metrics"]["boxes_online"], before["metrics"]["boxes_online"] + 1)
 
+    def test_device_sync_health_payload_is_bounded_and_does_not_reactivate(self):
+        from odoo.addons.community_iot_box.controllers.iot_api import CommunityIotApiController
+
+        controller = CommunityIotApiController()
+        for invalid in ([], {}, 1, ["connected"]):
+            normalized = controller._normalize_detected_device({
+                "name": "Health Device", "device_type": invalid,
+                "backend": invalid, "interface": invalid,
+                "health_status": invalid,
+                "health_checked_at": "2026-01-01T00:00:00Z",
+            })
+            self.assertEqual(normalized["health_status"], "unknown")
+        normalized = controller._normalize_detected_device({
+            "name": "Health Device", "health_status": "connected",
+            "health_checked_at": "invalid timestamp",
+        })
+        self.assertEqual(normalized["health_status"], "unknown")
+        self.assertFalse(normalized["health_checked_at"])
+
+    def test_device_sync_keeps_inactive_auto_device_and_stable_identity(self):
+        device_payload = {
+            "name": "Queue Printer", "device_key": "queue-printer",
+            "auto_identifier": "cups:queue-printer", "interface": "cups",
+            "health_status": ["connected"],
+            "health_checked_at": "2026-01-01T00:00:00Z",
+        }
+        device = self.env["community_iot_box.iot_device"].create({
+            "name": "Queue Printer", "box_id": self.box.id,
+            "device_key": "queue-printer", "type": "standard_printer",
+            "backend": "cups", "auto_detected": True,
+            "auto_identifier": "cups:queue-printer", "active": False,
+        })
+        for _ in range(2):
+            response = self.url_open(
+                "/iot/api/v1/devices/sync",
+                data=json.dumps({"devices": [device_payload], "replace_auto_detected": False}),
+                headers=self._headers(),
+            )
+            self.assertEqual(response.status_code, 200)
+            if _ == 0:
+                config_version = self.box.config_version
+        self.assertEqual(device.with_context(active_test=False).search_count([
+            ("box_id", "=", self.box.id), ("auto_identifier", "=", "cups:queue-printer")
+        ]), 1)
+        device.invalidate_recordset()
+        self.assertFalse(device.active)
+        self.assertEqual(device.health_status, "unknown")
+        self.assertEqual(self.box.config_version, config_version)
+
+    def test_device_sync_rejects_malformed_devices_container_without_500(self):
+        for malformed in ({"status": "connected"}, ["not-an-object"], 1):
+            response = self.url_open(
+                "/iot/api/v1/devices/sync", data=json.dumps({"devices": malformed}),
+                headers=self._headers(),
+            )
+            self.assertEqual(response.status_code, 400)
+
     def _new_job(self, **kwargs):
         kwargs.setdefault("name", "API Test Job")
         kwargs.setdefault("box_id", self.box.id)

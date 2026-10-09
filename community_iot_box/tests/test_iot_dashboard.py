@@ -116,3 +116,50 @@ class TestCommunityIotDashboard(TransactionCase):
             self.online_box.last_seen = now - timedelta(seconds=181)
             self.assertEqual(self.online_box.action_test_connection()["params"]["type"], "warning")
             self.assertEqual(self.online_box.state, "offline")
+
+    def test_dashboard_includes_disabled_device_and_health_counts(self):
+        disabled = self.Device.create({
+            "name": "Disabled dashboard device", "box_id": self.online_box.id,
+            "device_key": "disabled-dashboard", "type": "standard_printer",
+            "backend": "standard", "interface": "other",
+            "active": False,
+        })
+        self.device.write({
+            "health_status": "connected", "health_checked_at": fields.Datetime.now(),
+        })
+        data = self.Box.get_dashboard_data()
+        card = next(item for item in data["boxes"] if item["id"] == self.online_box.id)
+        device_ids = {item["id"] for item in card["devices"]}
+        self.assertIn(disabled.id, device_ids)
+        self.assertEqual(card["enabled_configured_count"], 1)
+        self.assertEqual(card["reachable_count"], 1)
+        self.assertGreaterEqual(data["metrics"]["enabled_configured"], 1)
+
+    def test_dashboard_health_classifier_and_all_box_aggregates(self):
+        now = fields.Datetime.now()
+        box = self.Box.create({"name": "Health classification", "state": "online", "last_seen": now})
+        unknown = self.Device.create({
+            "name": "Unknown health", "box_id": box.id, "device_key": "unknown-health",
+            "type": "standard_printer", "backend": "standard", "interface": "other",
+            "health_status": "unknown",
+        })
+        data = self.Box.get_dashboard_data()
+        card = next(item for item in data["boxes"] if item["id"] == box.id)
+        self.assertEqual(card["health_state"], "yellow")
+        self.assertEqual(card["devices"][0]["health_status"], "unknown")
+        self.assertTrue(card["devices"][0]["health_checked_at"] is False)
+
+        unknown.write({"health_status": "connected", "health_checked_at": now})
+        box.write({"last_seen": now - timedelta(minutes=5, seconds=1)})
+        data = self.Box.get_dashboard_data()
+        card = next(item for item in data["boxes"] if item["id"] == box.id)
+        self.assertEqual(card["health_state"], "red")
+
+        box.write({"last_seen": now})
+        unknown.active = False
+        data = self.Box.get_dashboard_data()
+        card = next(item for item in data["boxes"] if item["id"] == box.id)
+        self.assertEqual(card["health_state"], "yellow")
+        self.assertEqual(card["enabled_configured_count"], 0)
+        self.assertEqual(card["reachable_count"], 0)
+        self.assertIn(unknown.id, {device["id"] for device in card["devices"]})

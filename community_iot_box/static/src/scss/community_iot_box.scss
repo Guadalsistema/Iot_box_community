@@ -588,6 +588,11 @@
         color: #667085;
     }
 
+    .o_ciot_health_red { border-color: #f1c4c1; background: var(--ciot-danger-soft); color: var(--ciot-danger); }
+    .o_ciot_health_yellow { border-color: #efd49f; background: var(--ciot-warning-soft); color: var(--ciot-warning); }
+    .o_ciot_health_normal { border-color: #c6e6cd; background: var(--ciot-online-soft); color: var(--ciot-online); }
+    .o_ciot_device_health { margin: 10px 0 0; padding: 0; list-style: none; font-size: 11px; color: var(--ciot-muted); }
+
     .o_ciot_box_details {
         display: grid;
         grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.2fr);
