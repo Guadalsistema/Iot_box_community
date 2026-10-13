@@ -236,6 +236,7 @@ action = {
                 <field name="type"/>
                 <field name="backend"/>
                 <field name="interface"/>
+                <field name="connection_host" string="Address" optional="show"/>
                 <field name="cups_printer_name"/>
                 <field name="auto_detected"/>
                 <field name="last_discovered_at"/>
@@ -281,7 +282,7 @@ action = {
 
                     <group string="Connection">
                         <group>
-                            <field name="connection_host" invisible="interface not in ('network',)"/>
+                            <field name="connection_host" string="Address" invisible="interface not in ('network',)"/>
                             <field name="connection_port" invisible="interface not in ('network',)"/>
                             <field name="connection_device" invisible="interface not in ('serial', 'usb')"/>
                             <field name="serial_baudrate" invisible="interface != 'serial'"/>
