@@ -1,5 +1,6 @@
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from unittest.mock import patch
 
 from odoo import fields
 from odoo.tests.common import HttpCase, tagged
@@ -79,6 +80,28 @@ class TestCommunityIotApiController(HttpCase):
         })
         self.assertEqual(normalized["health_status"], "unknown")
         self.assertFalse(normalized["health_checked_at"])
+
+    def test_device_health_timestamp_precision_and_clock_skew(self):
+        from odoo.addons.community_iot_box.controllers.iot_api import CommunityIotApiController
+
+        controller = CommunityIotApiController()
+        now = datetime(2026, 11, 6, 9, 6, 55, 500000, tzinfo=timezone.utc)
+        cases = (
+            ("2026-11-06T09:06:55.123456+00:00", "connected", now.replace(tzinfo=None, microsecond=123456)),
+            ("2026-11-06T09:07:05.000000+00:00", "connected", now.replace(tzinfo=None)),
+            ("2026-11-06T09:07:26.000000+00:00", "unknown", False),
+            ("2026-11-06T09:06:55", "unknown", False),
+        )
+        with patch("odoo.addons.community_iot_box.controllers.iot_api.datetime", wraps=datetime) as clock:
+            clock.now.return_value = now
+            for timestamp, status, checked_at in cases:
+                with self.subTest(timestamp=timestamp):
+                    normalized = controller._normalize_detected_device({
+                        "name": "Health Device", "health_status": "connected",
+                        "health_checked_at": timestamp,
+                    })
+                    self.assertEqual(normalized["health_status"], status)
+                    self.assertEqual(normalized["health_checked_at"], checked_at)
 
     def test_device_sync_keeps_inactive_auto_device_and_stable_identity(self):
         device_payload = {
