@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from psycopg2 import OperationalError
 
@@ -37,6 +37,7 @@ DOCUMENT_DISPATCHERS = {
     "document_print_v1": PdfDispatchV2(),
 }
 CAPABILITY_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+HEALTH_CLOCK_SKEW = timedelta(seconds=30)
 
 
 def _parse_document_lock_token(raw_token):
@@ -276,9 +277,11 @@ class CommunityIotApiController(http.Controller):
                 if checked.tzinfo is None:
                     raise ValueError("timestamp must include timezone")
                 checked = checked.astimezone(timezone.utc).replace(tzinfo=None)
-                now = fields.Datetime.to_datetime(fields.Datetime.now())
-                if checked <= now:
-                    health_status, health_checked_at = raw_status, checked
+                now = datetime.now(timezone.utc).replace(tzinfo=None)
+                if checked <= now + HEALTH_CLOCK_SKEW:
+                    # Clamp small clock differences so the dashboard sees a
+                    # fresh check rather than a timestamp in the future.
+                    health_status, health_checked_at = raw_status, min(checked, now)
             except (TypeError, ValueError, OverflowError):
                 pass
 
